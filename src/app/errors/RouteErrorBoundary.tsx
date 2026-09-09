@@ -11,7 +11,7 @@ export function RouteErrorBoundary() {
   const detail =
     error instanceof Error && import.meta.env.DEV
       ? error.message
-      : 'Sprintia could not load this view. Return to the dashboard and try again.'
+      : 'FalconTrack could not load this view. Return to the dashboard and try again.'
 
   return (
     <main className="error-page" role="alert">

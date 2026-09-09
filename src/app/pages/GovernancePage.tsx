@@ -200,7 +200,7 @@ export function GovernancePage() {
             <span>{report.data.events.totalItems} matching events</span>
             <a
               className="secondary-button"
-              download={`sprintia-audit-page-${String(page)}.csv`}
+              download={`falcontrack-audit-page-${String(page)}.csv`}
               href={`data:text/csv;charset=utf-8,${encodeURIComponent(governanceCsv(report.data.exportRows))}`}
             >
               Export this page

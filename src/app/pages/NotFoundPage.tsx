@@ -8,7 +8,7 @@ export function NotFoundPage() {
       <header className="page-header">
         <p className="page-eyebrow">404</p>
         <h1 id="not-found-title">Page not found</h1>
-        <p>The requested Sprintia view does not exist.</p>
+        <p>The requested FalconTrack view does not exist.</p>
       </header>
       <Link className="text-link" to="/">
         Return to dashboard
