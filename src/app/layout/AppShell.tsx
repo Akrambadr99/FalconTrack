@@ -35,7 +35,7 @@ export function AppShell() {
         <p className="page-eyebrow">Session security</p>
         <h1>Workspace access changed</h1>
         <p>
-          Your membership is no longer active. Taskora removed workspace data
+          Your membership is no longer active. Sprintia removed workspace data
           from the active view.
         </p>
         <button
@@ -57,7 +57,7 @@ export function AppShell() {
         <p className="page-eyebrow">Session security</p>
         <h1>Permissions could not be verified</h1>
         <p>
-          Taskora removed workspace data from this view until your access can
+          Sprintia removed workspace data from this view until your access can
           be confirmed.
         </p>
         <button
@@ -80,11 +80,11 @@ export function AppShell() {
       </a>
 
       <aside className="app-sidebar">
-        <Link className="app-brand" to="/" aria-label="Taskora dashboard">
+        <Link className="app-brand" to="/" aria-label="Sprintia dashboard">
           <span className="app-brand__mark" aria-hidden="true">
             TK
           </span>
-          <span>Taskora</span>
+          <span>Sprintia</span>
         </Link>
 
         <PrimaryNavigation />
@@ -111,7 +111,7 @@ export function AppShell() {
         <header className="app-topbar">
           <div>
             <p className="app-topbar__label">Workspace</p>
-            <p className="app-topbar__name">Taskora Workspace</p>
+            <p className="app-topbar__name">Sprintia Workspace</p>
           </div>
           <GlobalSearch />
           <NotificationCenter />

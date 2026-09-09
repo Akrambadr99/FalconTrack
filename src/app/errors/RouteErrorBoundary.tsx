@@ -11,7 +11,7 @@ export function RouteErrorBoundary() {
   const detail =
     error instanceof Error && import.meta.env.DEV
       ? error.message
-      : 'Taskora could not load this view. Return to the dashboard and try again.'
+      : 'Sprintia could not load this view. Return to the dashboard and try again.'
 
   return (
     <main className="error-page" role="alert">
