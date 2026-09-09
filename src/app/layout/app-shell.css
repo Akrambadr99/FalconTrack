@@ -59,7 +59,7 @@
   width: 2.25rem;
   height: 2.25rem;
   border-radius: var(--radius-md);
-  box-shadow: 0 0.5rem 1.25rem rgb(67 56 202 / 20%);
+  box-shadow: var(--shadow-sm);
 }
 
 .app-sidebar__environment {
