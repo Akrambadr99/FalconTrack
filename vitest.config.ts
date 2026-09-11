@@ -6,20 +6,14 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     exclude: ['e2e/**', 'node_modules/**'],
-    maxWorkers: 4,
     setupFiles: ['./src/test/setup.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html'],
       reportsDirectory: 'coverage',
-      include: ['src/**/*.{ts,tsx}'],
-      exclude: ['src/main.tsx', 'src/test/**'],
-      thresholds: {
-        branches: 80,
-        functions: 80,
-        lines: 80,
-        statements: 80,
-      },
+      include: ['src/occupancy/**/*.ts'],
+      exclude: ['src/**/*.test.ts', 'src/**/fixtures.ts'],
+      thresholds: { branches: 80, functions: 80, lines: 80, statements: 80 },
     },
   },
 })

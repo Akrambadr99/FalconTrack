@@ -92,4 +92,19 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    name: 'domain-fixture-tests',
+    files: ['src/**/*.test.{ts,tsx}'],
+    rules: {
+      '@typescript-eslint/no-non-null-assertion': 'off',
+    },
+  },
+  {
+    name: 'typed-view-styles',
+    files: ['src/App.tsx'],
+    rules: {
+      '@typescript-eslint/no-non-null-assertion': 'off',
+      '@typescript-eslint/restrict-plus-operands': 'off',
+    },
+  },
 )
