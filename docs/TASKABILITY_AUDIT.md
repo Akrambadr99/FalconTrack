@@ -1,0 +1,19 @@
+# StayPilot taskability audit
+
+## Audit
+
+Allocation combines stay selection, room selection, readiness, overlap, and refreshed inventory. Arrival/folio work combines pending actions, related records, and rollback. Housekeeping combines schedules, roles, and room transitions. Exceptions add conflicts, attachments, and reporting. Fixed rooms, stays, dates, actors, and folios support 1–4-file tasks. Cosmetic room cards are weak; replacing booking or channel management is too broad.
+
+## 30 classified directions
+
+**Strong candidate · Medium/Medium-Hard (18):** 1 allocation preview; 2 combined overlap/readiness reasons; 3 stale room selection; 4 refreshed inventory eligibility; 5 filtered arrival selection; 6 delayed check-in ownership; 7 optimistic folio rollback; 8 partial bulk arrival plan; 9 reservation conflict retry; 10 housekeeping recurrence edits; 11 actor change during inspection; 12 room-scoped task drafts; 13 overbooking activity filters; 14 evidence upload validation; 15 safe folio export; 16 stay cursor recovery; 17 structured guest search; 18 cross-tab refresh preserving choices.
+
+**Medium (5):** 19 comment mentions; 20 notification snooze; 21 webhook retry; 22 archived room blocks; 23 empty arrival page recovery.
+
+**Poor hidden-test candidate (2):** 24 payment-terminal timing; 25 native folio printing.
+
+**Too Easy (2):** 26 rename Ready; 27 recolor a room badge.
+
+**Too Hard (3):** 28 replace booking; 29 migrate every reservation; 30 coordinate channel managers and payment systems.
+
+Strong count: **18**, with deterministic date, ownership, transition, and conflict behavior.
