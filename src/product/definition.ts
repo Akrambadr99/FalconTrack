@@ -49,7 +49,53 @@ const operations: Operation[] = [
     { key: 'release', label: 'Release maintenance block', kind: 'block', from: ['scheduled'], roles: [roles[0]!], run: ({ entity }) => { entity.status = 'released'; return 'Maintenance date block released.'; } },
 ];
 const seed = [entity('room-1', 'room', 'Room 204', 'ready', { type: 'standard', rate: 15000 }), entity('room-2', 'room', 'Room 501', 'ready', { type: 'suite', rate: 28000 }), entity('stay-1', 'stay', 'Maya Hassan · September', 'reserved', { room: 'room-1', arrival: '2026-09-12', departure: '2026-09-15', guest: 'Maya Hassan' })];
+kinds.find(item => item.key === 'stay')!.fields.push({ key: 'roomSince', label: 'Current room occupied since', type: 'date', required: false });
+kinds.push(kind('move', 'Room move requests', ['planned', 'completed', 'cancelled'], [], [ref('stay', 'Guest stay', 'stay'), ref('source', 'Previous room', 'room'), ref('target', 'Destination room', 'room'), num('stayVersion', 'Stay version', 1, 1), num('targetVersion', 'Destination version', 1, 1), txt('owner', 'Requesting actor'), txt('reason', 'Move reason'), { ...date('movedOn', 'Move date'), required: false }]));
+const occupancyStart = (stay: Entity) => typeof stay.fields['roomSince'] === 'string' && stay.fields['roomSince'].length > 0 ? text(stay.fields, 'roomSince') : text(stay.fields, 'arrival');
+const moveFields = [ref('target', 'Destination room', 'room'), txt('reason', 'Move reason')];
+const moveDetails = (entities: Entity[], stay: Entity, input: Record<string, string | number | boolean>) => {
+    requireThat(stay.status === 'checked-in', 'Room moves require a checked-in stay.');
+    const target = find(entities, text(input, 'target'), 'room');
+    requireThat(target.id !== stay.fields['room'], 'Choose a different destination room.');
+    requireThat(text(input, 'reason').trim().length >= 12, 'Provide a specific reason for the room move.');
+    return { stay: stay.id, source: text(stay.fields, 'room'), target: target.id, stayVersion: stay.revision, targetVersion: target.revision, reason: text(input, 'reason').trim() };
+};
+operations.push(
+    { key: 'plan-move', label: 'Plan guest room move', kind: 'stay', from: ['checked-in'], roles: [roles[0]!, roles[1]!], fields: moveFields, run: ({ state, entity, actor, input, add }) => {
+        requireThat(!rows(state.entities, 'move').some(item => item.fields['stay'] === entity.id && item.status === 'planned'), 'A room move is already planned. Revise or cancel it.');
+        add('move', 'Room move · ' + entity.title, { ...moveDetails(state.entities, entity, input), owner: actor.id });
+        return 'Room move planned; occupancy changes only when the move is executed.';
+    } },
+    { key: 'revise-move', label: 'Revise guest room move', kind: 'move', from: ['planned'], roles: [roles[0]!, roles[1]!], fields: moveFields, run: ({ state, entity, actor, input }) => {
+        requireThat(entity.fields['owner'] === actor.id || actor.role === 'Duty Manager', 'Only the requester or duty manager may revise the move.');
+        Object.assign(entity.fields, moveDetails(state.entities, find(state.entities, text(entity.fields, 'stay'), 'stay'), input));
+        return 'Room move refreshed against current stay and destination versions.';
+    } },
+    { key: 'cancel-move', label: 'Cancel guest room move', kind: 'move', from: ['planned'], roles: [roles[0]!, roles[1]!], run: ({ entity, actor }) => { requireThat(entity.fields['owner'] === actor.id || actor.role === 'Duty Manager', 'Only the requester or duty manager may cancel the move.'); entity.status = 'cancelled'; return 'Room move cancelled without changing occupancy.'; } },
+    { key: 'execute-move', label: 'Execute guest room move', kind: 'move', from: ['planned'], roles: [roles[0]!, roles[1]!], run: ({ state, entity, actor, now, add }) => {
+        requireThat(entity.fields['owner'] === actor.id || actor.role === 'Duty Manager', 'Only the requester or duty manager may execute the move.');
+        const stay = find(state.entities, text(entity.fields, 'stay'), 'stay');
+        const source = find(state.entities, text(entity.fields, 'source'), 'room');
+        const target = find(state.entities, text(entity.fields, 'target'), 'room');
+        const day = now.slice(0, 10);
+        requireThat(stay.status === 'checked-in' && stay.fields['room'] === source.id && source.status === 'occupied', 'Guest occupancy changed. Review the stay before retrying.');
+        requireThat(stay.revision === entity.fields['stayVersion'] && target.revision === entity.fields['targetVersion'], 'Stay or destination changed. Revise the move before retrying.');
+        requireThat(day >= text(stay.fields, 'arrival') && day < text(stay.fields, 'departure'), 'Move date must be within the guest stay.');
+        requireThat(target.status === 'ready' && !linked(state.entities, 'task', 'room', target.id).some(item => item.status !== 'inspected'), 'Destination room is not ready or housekeeping remains open.');
+        requireThat(!linked(state.entities, 'stay', 'room', target.id).some(item => ['reserved', 'checked-in'].includes(item.status) && overlaps(day, text(stay.fields, 'departure'), occupancyStart(item), text(item.fields, 'departure'))), 'Destination has a conflicting reservation.');
+        requireThat(!linked(state.entities, 'block', 'room', target.id).some(item => item.status === 'scheduled' && overlaps(day, text(stay.fields, 'departure'), text(item.fields, 'start'), text(item.fields, 'end'))), 'Destination has a conflicting maintenance block.');
+        source.status = 'dirty';
+        target.status = 'occupied';
+        stay.fields['room'] = target.id;
+        stay.fields['roomSince'] = day;
+        entity.fields['movedOn'] = day;
+        entity.status = 'completed';
+        add('task', 'Move departure clean · ' + source.title, { room: source.id, stay: stay.id, assignee: 'Housekeeping team' });
+        return 'Guest moved: destination occupied, previous room dirty, cleaning queued; booked folio charges preserved.';
+    } },
+);
 const validate: Product['validate'] = entities => {
+    for (const stay of rows(entities, 'stay')) { const since = stay.fields['roomSince']; requireThat(!since || (typeof since === 'string' && since >= text(stay.fields, 'arrival') && since < text(stay.fields, 'departure')), 'Current occupancy date must be within the reserved stay.'); }
     const stays = rows(entities, 'stay').filter(row => !['cancelled', 'checked-out'].includes(row.status));
     for (const stay of rows(entities, 'stay'))
         requireThat(text(stay.fields, 'arrival') < text(stay.fields, 'departure'), 'Departure must follow arrival.');
@@ -57,9 +103,9 @@ const validate: Product['validate'] = entities => {
         requireThat(text(block.fields, 'start') < text(block.fields, 'end'), 'Maintenance end must follow start.');
     for (const [index, stay] of stays.entries()) {
         for (const other of stays.slice(index + 1))
-            requireThat(stay.fields['room'] !== other.fields['room'] || !overlaps(text(stay.fields, 'arrival'), text(stay.fields, 'departure'), text(other.fields, 'arrival'), text(other.fields, 'departure')), 'Room is already reserved for these dates.');
+            requireThat(stay.fields['room'] !== other.fields['room'] || !overlaps(occupancyStart(stay), text(stay.fields, 'departure'), occupancyStart(other), text(other.fields, 'departure')), 'Room is already reserved for these dates.');
         for (const block of rows(entities, 'block').filter(row => row.status === 'scheduled' && row.fields['room'] === stay.fields['room']))
-            requireThat(!overlaps(text(stay.fields, 'arrival'), text(stay.fields, 'departure'), text(block.fields, 'start'), text(block.fields, 'end')), 'Stay conflicts with room maintenance.');
+            requireThat(!overlaps(occupancyStart(stay), text(stay.fields, 'departure'), text(block.fields, 'start'), text(block.fields, 'end')), 'Stay conflicts with room maintenance.');
     }
 };
 const metrics: Product['metrics'] = entities => [{ label: 'Ready rooms', value: String(rows(entities, 'room').filter(row => row.status === 'ready').length) }, { label: 'In-house guests', value: String(rows(entities, 'stay').filter(row => row.status === 'checked-in').length) }, { label: 'Outstanding folios', value: money(total(rows(entities, 'folio'), 'charges') - total(rows(entities, 'folio'), 'payments')) }];

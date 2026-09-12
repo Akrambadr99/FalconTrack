@@ -24,6 +24,21 @@ export function WorkspacePage() {
     const [values, setValues] = useState<Record<string, Value>>({});
     const [title, setTitle] = useState('');
     const importRef = useRef<HTMLInputElement>(null);
+    const modalRef = useRef<HTMLDialogElement>(null);
+    const [commandRevision, setCommandRevision] = useState(snapshot.revision);
+    const [commandTarget, setCommandTarget] = useState('');
+    const [commandActor, setCommandActor] = useState('');
+    const [commandError, setCommandError] = useState('');
+    useEffect(() => {
+        if (!dialog) return;
+        const trigger = document.activeElement;
+        const modal = modalRef.current;
+        modal?.showModal();
+        return () => {
+            modal?.close();
+            if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus();
+        };
+    }, [dialog]);
     const definition = product.kinds.find(item => item.key === kind);
     const rows = useMemo(() => queryEntities(snapshot, kind, query, status), [snapshot, kind, query, status]);
     const selected = snapshot.entities.find(entity => entity.id === selectedId);
@@ -49,6 +64,7 @@ export function WorkspacePage() {
         }
         catch (error) {
             setNotice(error instanceof Error ? error.message : 'Operation failed.');
+            setCommandError(error instanceof Error ? error.message : 'Operation failed.');
         }
     };
     const openCreate = () => { setValues(initialValues(definition?.fields ?? [])); setTitle(''); setDialog('create'); };
@@ -59,7 +75,11 @@ export function WorkspacePage() {
         setTitle(selected.title);
         setDialog('edit');
     };
-    const openOperation = (key: string) => { const selectedOperation = product.operations.find(item => item.key === key); setOperation(key); setValues(initialValues(selectedOperation?.fields ?? [])); setDialog('operate'); };
+    const openOperation = (key: string) => {
+        const selectedOperation = product.operations.find(item => item.key === key);
+        setCommandRevision(snapshot.revision); setCommandTarget(selectedId); setCommandActor(actorId); setCommandError('');
+        setOperation(key); setValues(initialValues(selectedOperation?.fields ?? [])); setDialog('operate');
+    };
     const submit = (event: FormEvent) => {
         event.preventDefault();
         const id = crypto.randomUUID();
@@ -68,7 +88,7 @@ export function WorkspacePage() {
         else if (dialog === 'edit' && selected)
             commit({ id, expectedRevision: snapshot.revision, actorId, type: 'edit', entityId: selected.id, title, input: values });
         else if (dialog === 'operate' && selected)
-            commit({ id, expectedRevision: snapshot.revision, actorId, type: 'operate', entityId: selected.id, operation, input: values });
+            commit({ id, expectedRevision: commandRevision, actorId: commandActor, type: 'operate', entityId: commandTarget, operation, input: values });
     };
     const formFields = dialog === 'operate' ? product.operations.find(item => item.key === operation)?.fields ?? [] : definition?.fields ?? [];
     const importBackup = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -95,7 +115,7 @@ export function WorkspacePage() {
         <section className="workspace"><div className="list"><div className="filters"><input aria-label="Search records" placeholder="Search records…" value={query} onChange={event => setQuery(event.target.value)}/><select aria-label="Filter status" value={status} onChange={event => setStatus(event.target.value)}><option value="">All states</option>{definition?.states.map(item => <option key={item}>{item}</option>)}</select><button title="Export current view" onClick={() => download(kind + '.csv', csv(rows), 'text/csv')}>CSV</button></div>{rows.map(row => <button className={selectedId === row.id ? 'row selected' : 'row'} key={row.id} onClick={() => setSelectedId(row.id)}><span><strong>{row.title}</strong><small>{row.id} · r{row.revision}</small></span><em>{row.status}</em></button>)}{rows.length === 0 && <p className="empty">No records match this view.</p>}</div>
           <div className="detail">{selected ? <><div className="detail-title"><div><small>{selected.kind.toUpperCase()}</small><h2>{selected.title}</h2></div><span>{selected.status}</span></div><dl>{definition?.fields.map(field => <div key={field.key}><dt>{field.label}</dt><dd>{display(selected.fields[field.key], snapshot.entities)}</dd></div>)}</dl><div className="toolbar"><button onClick={openEdit}>Edit draft</button>{available.map(item => <button className="primary" key={item.key} onClick={() => openOperation(item.key)}>{item.label}</button>)}</div><Linked entity={selected} snapshot={snapshot}/><History entity={selected} snapshot={snapshot}/></> : <p className="empty">Choose a record to inspect it.</p>}</div></section>
       </main></div>
-    {dialog && <div className="modal-backdrop"><form className="modal" onSubmit={submit}><div><h2>{dialog === 'operate' ? product.operations.find(item => item.key === operation)?.label : dialog === 'create' ? 'Create record' : 'Edit draft'}</h2><button type="button" aria-label="Close dialog" onClick={() => setDialog(null)}>×</button></div>{dialog !== 'operate' && <label>Record title<input required maxLength={200} value={title} onChange={event => setTitle(event.target.value)}/></label>}{formFields.map(field => <Editor key={field.key} field={field} value={values[field.key]} entities={snapshot.entities} onChange={value => setValues(current => ({ ...current, [field.key]: value }))}/>)}<button className="primary" type="submit">Save command</button></form></div>}
+    {dialog && <dialog ref={modalRef} aria-labelledby="command-title" onCancel={() => setDialog(null)}><form className="modal" onSubmit={submit}><div><h2 id="command-title">{dialog === 'operate' ? product.operations.find(item => item.key === operation)?.label : dialog === 'create' ? 'Create record' : 'Edit draft'}</h2><button type="button" aria-label="Close dialog" onClick={() => setDialog(null)}>×</button></div>{dialog !== 'operate' && <label>Record title<input required maxLength={200} value={title} onChange={event => setTitle(event.target.value)}/></label>}{formFields.map(field => <Editor key={field.key} field={field} value={values[field.key]} entities={snapshot.entities} onChange={value => setValues(current => ({ ...current, [field.key]: value }))}/>)}{commandError && <p role="alert">{commandError}</p>}{dialog === 'operate' && <button type="button" onClick={() => { const latest = repository.read(); setSnapshot(latest); setCommandRevision(latest.revision); setCommandError(''); }}>Refresh records and retain input</button>}<button className="primary" type="submit">Save command</button></form></dialog>}
   </div>;
 }
 function display(value: Value | undefined, entities: Entity[]) {
