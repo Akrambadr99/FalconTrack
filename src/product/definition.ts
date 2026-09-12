@@ -1,34 +1,66 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
-import type { Product, Kind, Field, Operation, Entity } from '../workspace/types'
-import { entity, find, rows, total, text, number, requireThat, money, overlaps } from '../workspace/values'
-const txt = (key: string, label: string): Field => ({ key, label, type: 'text', required: true })
-const num = (key: string, label: string, initial = 0, min = 0, max = Number.MAX_SAFE_INTEGER): Field => ({ key, label, type: 'number', required: true, integer: true, initial, min, max })
-const date = (key: string, label: string): Field => ({ key, label, type: 'date', required: true, initial: '2026-09-12' })
-const ref = (key: string, label: string, reference: string): Field => ({ key, label, type: 'reference', reference, required: true })
-const choice = (key: string, label: string, options: string[]): Field => ({ key, label, type: 'select', options, required: true, initial: options[0] ?? '' })
-const kind = (key: string, label: string, states: string[], editors: string[], fields: Field[]): Kind => ({ key, label, states, editors, fields, initial: states[0] ?? 'draft' })
-const linked = (entities: Entity[], kind: string, key: string, id: string) => rows(entities, kind).filter(item => item.fields[key] === id)
-void txt; void num; void date; void ref; void choice; void kind; void linked; void entity; void find; void rows; void total; void text; void number; void requireThat; void money; void overlaps
-
-const roles=['Duty Manager','Front Desk','Housekeeping Lead','Auditor']
-const kinds=[
-kind('room','Room inventory',['ready','occupied','dirty','inspecting','blocked'],[roles[0]!],[choice('type','Room type',['standard','suite']),num('rate','Nightly rate (cents)',15000,1)]),
-kind('stay','Guest reservations',['reserved','checked-in','checked-out','cancelled'],[roles[0]!,roles[1]!],[ref('room','Assigned room','room'),date('arrival','Arrival'),date('departure','Departure'),txt('guest','Guest name')]),
-kind('folio','Guest folios',['open','settled'],[],[ref('stay','Reservation','stay'),num('charges','Room charges (cents)'),num('payments','Payments (cents)')]),
-kind('task','Housekeeping tasks',['queued','cleaned','inspected'],[],[ref('room','Room','room'),ref('stay','Departed stay','stay'),txt('assignee','Assigned team')]),
-kind('block','Maintenance blocks',['scheduled','released'],[roles[0]!],[ref('room','Room','room'),date('start','Start date'),date('end','End date'),txt('reason','Maintenance reason')]),
-]
-const operations:Operation[]=[
-{key:'checkin',label:'Check in guest',kind:'stay',from:['reserved'],roles:[roles[0]!,roles[1]!],run:({state,entity,now,add})=>{const room=find(state.entities,text(entity.fields,'room'));requireThat(room.status==='ready','Assigned room is not ready.');requireThat(now.slice(0,10)>=text(entity.fields,'arrival')&&now.slice(0,10)<text(entity.fields,'departure'),'Check-in must occur within the reserved stay dates.');room.status='occupied';entity.status='checked-in';const nights=Math.round((Date.parse(text(entity.fields,'departure'))-Date.parse(text(entity.fields,'arrival')))/86400000);add('folio','Folio · '+entity.title,{stay:entity.id,charges:nights*number(room.fields,'rate'),payments:0});return 'Guest checked in and room-night charges posted.'}},
-{key:'payment',label:'Post folio payment',kind:'folio',from:['open'],roles:[roles[0]!,roles[1]!],fields:[num('amount','Payment (cents)',1000,1)],run:({entity,input})=>{const paid=number(entity.fields,'payments')+number(input,'amount');requireThat(paid<=number(entity.fields,'charges'),'Payment exceeds outstanding folio balance.');entity.fields['payments']=paid;if(paid===number(entity.fields,'charges'))entity.status='settled';return 'Guest payment posted to folio.'}},
-{key:'checkout',label:'Check out and queue clean',kind:'stay',from:['checked-in'],roles:[roles[0]!,roles[1]!],run:({state,entity,add})=>{requireThat(linked(state.entities,'folio','stay',entity.id).every(row=>row.status==='settled'),'Settle the guest folio before checkout.');entity.status='checked-out';const room=find(state.entities,text(entity.fields,'room'));room.status='dirty';add('task','Checkout clean · '+room.title,{room:room.id,stay:entity.id,assignee:'Housekeeping team'});return 'Guest checked out; room marked dirty and cleaning task created.'}},
-{key:'clean',label:'Finish room cleaning',kind:'task',from:['queued'],roles:[roles[2]!],run:({state,entity})=>{const room=find(state.entities,text(entity.fields,'room'));requireThat(room.status==='dirty','Room must be dirty before cleaning.');entity.status='cleaned';room.status='inspecting';return 'Cleaning complete; room awaits inspection.'}},
-{key:'inspect',label:'Pass room inspection',kind:'task',from:['cleaned'],roles:[roles[0]!,roles[2]!],run:({state,entity})=>{const room=find(state.entities,text(entity.fields,'room'));requireThat(room.status==='inspecting','Room is not awaiting inspection.');entity.status='inspected';room.status='ready';return 'Inspection passed; room returned to ready inventory.'}},
-{key:'cancel',label:'Cancel reservation',kind:'stay',from:['reserved'],roles:[roles[0]!,roles[1]!],run:({entity})=>{entity.status='cancelled';return 'Reservation cancelled and room dates released.'}},
-{key:'release',label:'Release maintenance block',kind:'block',from:['scheduled'],roles:[roles[0]!],run:({entity})=>{entity.status='released';return 'Maintenance date block released.'}},
-]
-const seed=[entity('room-1','room','Room 204','ready',{type:'standard',rate:15000}),entity('room-2','room','Room 501','ready',{type:'suite',rate:28000}),entity('stay-1','stay','Maya Hassan · September','reserved',{room:'room-1',arrival:'2026-09-12',departure:'2026-09-15',guest:'Maya Hassan'})]
-const validate:Product['validate']=entities=>{const stays=rows(entities,'stay').filter(row=>!['cancelled','checked-out'].includes(row.status));for(const stay of rows(entities,'stay'))requireThat(text(stay.fields,'arrival')<text(stay.fields,'departure'),'Departure must follow arrival.');for(const block of rows(entities,'block'))requireThat(text(block.fields,'start')<text(block.fields,'end'),'Maintenance end must follow start.');for(const [index,stay] of stays.entries()){for(const other of stays.slice(index+1))requireThat(stay.fields['room']!==other.fields['room']||!overlaps(text(stay.fields,'arrival'),text(stay.fields,'departure'),text(other.fields,'arrival'),text(other.fields,'departure')),'Room is already reserved for these dates.');for(const block of rows(entities,'block').filter(row=>row.status==='scheduled'&&row.fields['room']===stay.fields['room']))requireThat(!overlaps(text(stay.fields,'arrival'),text(stay.fields,'departure'),text(block.fields,'start'),text(block.fields,'end')),'Stay conflicts with room maintenance.')}}
-const metrics:Product['metrics']=entities=>[{label:'Ready rooms',value:String(rows(entities,'room').filter(row=>row.status==='ready').length)},{label:'In-house guests',value:String(rows(entities,'stay').filter(row=>row.status==='checked-in').length)},{label:'Outstanding folios',value:money(total(rows(entities,'folio'),'charges')-total(rows(entities,'folio'),'payments'))}]
-
-export const product: Product = { name: 'StayPilot', description: 'Reservations, guest folios and room turnaround', accent: '#7e22ce', actors: roles.map((role,index)=>({id:'actor-'+String(index),name:['Maya Hassan','Omar Saleh','Lina Farouk','Nadia Ali'][index] ?? role,role})), kinds,operations,seed,validate,metrics }
+import type { Product, Kind, Field, Operation, Entity } from '../workspace/types';
+import { entity, find, rows, total, text, number, requireThat, money, overlaps } from '../workspace/values';
+const txt = (key: string, label: string): Field => ({ key, label, type: 'text', required: true });
+const num = (key: string, label: string, initial = 0, min = 0, max = Number.MAX_SAFE_INTEGER): Field => ({ key, label, type: 'number', required: true, integer: true, initial, min, max });
+const date = (key: string, label: string): Field => ({ key, label, type: 'date', required: true, initial: '2026-09-12' });
+const ref = (key: string, label: string, reference: string): Field => ({ key, label, type: 'reference', reference, required: true });
+const choice = (key: string, label: string, options: string[]): Field => ({ key, label, type: 'select', options, required: true, initial: options[0] ?? '' });
+const kind = (key: string, label: string, states: string[], editors: string[], fields: Field[]): Kind => ({ key, label, states, editors, fields, initial: states[0] ?? 'draft' });
+const linked = (entities: Entity[], kind: string, key: string, id: string) => rows(entities, kind).filter(item => item.fields[key] === id);
+void txt;
+void num;
+void date;
+void ref;
+void choice;
+void kind;
+void linked;
+void entity;
+void find;
+void rows;
+void total;
+void text;
+void number;
+void requireThat;
+void money;
+void overlaps;
+const roles = ['Duty Manager', 'Front Desk', 'Housekeeping Lead', 'Auditor'];
+const kinds = [
+    kind('room', 'Room inventory', ['ready', 'occupied', 'dirty', 'inspecting', 'blocked'], [roles[0]!], [choice('type', 'Room type', ['standard', 'suite']), num('rate', 'Nightly rate (cents)', 15000, 1)]),
+    kind('stay', 'Guest reservations', ['reserved', 'checked-in', 'checked-out', 'cancelled'], [roles[0]!, roles[1]!], [ref('room', 'Assigned room', 'room'), date('arrival', 'Arrival'), date('departure', 'Departure'), txt('guest', 'Guest name')]),
+    kind('folio', 'Guest folios', ['open', 'settled'], [], [ref('stay', 'Reservation', 'stay'), num('charges', 'Room charges (cents)'), num('payments', 'Payments (cents)')]),
+    kind('task', 'Housekeeping tasks', ['queued', 'cleaned', 'inspected'], [], [ref('room', 'Room', 'room'), ref('stay', 'Departed stay', 'stay'), txt('assignee', 'Assigned team')]),
+    kind('block', 'Maintenance blocks', ['scheduled', 'released'], [roles[0]!], [ref('room', 'Room', 'room'), date('start', 'Start date'), date('end', 'End date'), txt('reason', 'Maintenance reason')]),
+];
+const operations: Operation[] = [
+    { key: 'checkin', label: 'Check in guest', kind: 'stay', from: ['reserved'], roles: [roles[0]!, roles[1]!], run: ({ state, entity, now, add }) => { const room = find(state.entities, text(entity.fields, 'room')); requireThat(room.status === 'ready', 'Assigned room is not ready.'); requireThat(now.slice(0, 10) >= text(entity.fields, 'arrival') && now.slice(0, 10) < text(entity.fields, 'departure'), 'Check-in must occur within the reserved stay dates.'); room.status = 'occupied'; entity.status = 'checked-in'; const nights = Math.round((Date.parse(text(entity.fields, 'departure')) - Date.parse(text(entity.fields, 'arrival'))) / 86400000); add('folio', 'Folio · ' + entity.title, { stay: entity.id, charges: nights * number(room.fields, 'rate'), payments: 0 }); return 'Guest checked in and room-night charges posted.'; } },
+    { key: 'payment', label: 'Post folio payment', kind: 'folio', from: ['open'], roles: [roles[0]!, roles[1]!], fields: [num('amount', 'Payment (cents)', 1000, 1)], run: ({ entity, input }) => {
+            const paid = number(entity.fields, 'payments') + number(input, 'amount');
+            requireThat(paid <= number(entity.fields, 'charges'), 'Payment exceeds outstanding folio balance.');
+            entity.fields['payments'] = paid;
+            if (paid === number(entity.fields, 'charges'))
+                entity.status = 'settled';
+            return 'Guest payment posted to folio.';
+        } },
+    { key: 'checkout', label: 'Check out and queue clean', kind: 'stay', from: ['checked-in'], roles: [roles[0]!, roles[1]!], run: ({ state, entity, add }) => { requireThat(linked(state.entities, 'folio', 'stay', entity.id).every(row => row.status === 'settled'), 'Settle the guest folio before checkout.'); entity.status = 'checked-out'; const room = find(state.entities, text(entity.fields, 'room')); room.status = 'dirty'; add('task', 'Checkout clean · ' + room.title, { room: room.id, stay: entity.id, assignee: 'Housekeeping team' }); return 'Guest checked out; room marked dirty and cleaning task created.'; } },
+    { key: 'clean', label: 'Finish room cleaning', kind: 'task', from: ['queued'], roles: [roles[2]!], run: ({ state, entity }) => { const room = find(state.entities, text(entity.fields, 'room')); requireThat(room.status === 'dirty', 'Room must be dirty before cleaning.'); entity.status = 'cleaned'; room.status = 'inspecting'; return 'Cleaning complete; room awaits inspection.'; } },
+    { key: 'inspect', label: 'Pass room inspection', kind: 'task', from: ['cleaned'], roles: [roles[0]!, roles[2]!], run: ({ state, entity }) => { const room = find(state.entities, text(entity.fields, 'room')); requireThat(room.status === 'inspecting', 'Room is not awaiting inspection.'); entity.status = 'inspected'; room.status = 'ready'; return 'Inspection passed; room returned to ready inventory.'; } },
+    { key: 'cancel', label: 'Cancel reservation', kind: 'stay', from: ['reserved'], roles: [roles[0]!, roles[1]!], run: ({ entity }) => { entity.status = 'cancelled'; return 'Reservation cancelled and room dates released.'; } },
+    { key: 'release', label: 'Release maintenance block', kind: 'block', from: ['scheduled'], roles: [roles[0]!], run: ({ entity }) => { entity.status = 'released'; return 'Maintenance date block released.'; } },
+];
+const seed = [entity('room-1', 'room', 'Room 204', 'ready', { type: 'standard', rate: 15000 }), entity('room-2', 'room', 'Room 501', 'ready', { type: 'suite', rate: 28000 }), entity('stay-1', 'stay', 'Maya Hassan · September', 'reserved', { room: 'room-1', arrival: '2026-09-12', departure: '2026-09-15', guest: 'Maya Hassan' })];
+const validate: Product['validate'] = entities => {
+    const stays = rows(entities, 'stay').filter(row => !['cancelled', 'checked-out'].includes(row.status));
+    for (const stay of rows(entities, 'stay'))
+        requireThat(text(stay.fields, 'arrival') < text(stay.fields, 'departure'), 'Departure must follow arrival.');
+    for (const block of rows(entities, 'block'))
+        requireThat(text(block.fields, 'start') < text(block.fields, 'end'), 'Maintenance end must follow start.');
+    for (const [index, stay] of stays.entries()) {
+        for (const other of stays.slice(index + 1))
+            requireThat(stay.fields['room'] !== other.fields['room'] || !overlaps(text(stay.fields, 'arrival'), text(stay.fields, 'departure'), text(other.fields, 'arrival'), text(other.fields, 'departure')), 'Room is already reserved for these dates.');
+        for (const block of rows(entities, 'block').filter(row => row.status === 'scheduled' && row.fields['room'] === stay.fields['room']))
+            requireThat(!overlaps(text(stay.fields, 'arrival'), text(stay.fields, 'departure'), text(block.fields, 'start'), text(block.fields, 'end')), 'Stay conflicts with room maintenance.');
+    }
+};
+const metrics: Product['metrics'] = entities => [{ label: 'Ready rooms', value: String(rows(entities, 'room').filter(row => row.status === 'ready').length) }, { label: 'In-house guests', value: String(rows(entities, 'stay').filter(row => row.status === 'checked-in').length) }, { label: 'Outstanding folios', value: money(total(rows(entities, 'folio'), 'charges') - total(rows(entities, 'folio'), 'payments')) }];
+export const product: Product = { name: 'StayPilot', description: 'Reservations, guest folios and room turnaround', accent: '#7e22ce', actors: roles.map((role, index) => ({ id: 'actor-' + String(index), name: ['Maya Hassan', 'Omar Saleh', 'Lina Farouk', 'Nadia Ali'][index] ?? role, role })), kinds, operations, seed, validate, metrics };

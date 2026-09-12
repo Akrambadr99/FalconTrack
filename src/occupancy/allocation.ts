@@ -1,10 +1,49 @@
-export type RoomState='ready'|'dirty'|'inspecting'|'out-of-service'
-export type HotelRole='Front Desk'|'Housekeeping Lead'|'Revenue Manager'|'Duty Manager'
-export interface Stay{id:string;guest:string;roomId?:string;arrival:string;departure:string;state:'reserved'|'checked-in'|'checked-out'|'cancelled';roomType:string}
-export interface Room{id:string;type:string;state:RoomState;floor:number}
-export interface MaintenanceBlock{id:string;roomId:string;start:string;end:string;reason:string}
-const time=(v:string)=>new Date(v).getTime();export function overlaps(a:{arrival:string;departure:string},b:{arrival:string;departure:string}){return time(a.arrival)<time(b.departure)&&time(b.arrival)<time(a.departure)}
-export function availableRooms(rooms:Room[],stays:Stay[],blocks:MaintenanceBlock[],candidate:Stay){return rooms.filter(room=>room.type===candidate.roomType&&room.state==='ready'&&!stays.some(stay=>stay.id!==candidate.id&&stay.roomId===room.id&&stay.state!=='cancelled'&&overlaps(stay,candidate))&&!blocks.some(block=>block.roomId===room.id&&overlaps({arrival:block.start,departure:block.end},candidate)))}
-export function assignRoom(stay:Stay,room:Room,stays:Stay[],blocks:MaintenanceBlock[],role:HotelRole):Stay{if(!['Front Desk','Duty Manager'].includes(role))throw new Error('Front desk authority is required for room assignment.');if(room.state!=='ready')throw new Error('Room is not ready for guest arrival.');if(!availableRooms([room],stays,blocks,stay).length)throw new Error('Room conflicts with another stay or maintenance block.');return{...stay,roomId:room.id}}
-export function moveRoom(stay:Stay,target:Room,effectiveAt:string,stays:Stay[],blocks:MaintenanceBlock[],role:HotelRole){if(stay.state!=='checked-in')throw new Error('Only an active in-house stay can be moved.');const remaining:Stay={id:stay.id+'-move',guest:stay.guest,arrival:effectiveAt,departure:stay.departure,state:stay.state,roomType:stay.roomType};return{closedSegment:{...stay,departure:effectiveAt},newSegment:assignRoom(remaining,target,stays,blocks,role)}}
-export function occupancy(stays:Stay[],at:string,roomCount:number){const point=time(at);const active=stays.filter(s=>s.state!=='cancelled'&&time(s.arrival)<=point&&point<time(s.departure)).length;return Math.round(active/roomCount*1000)/10}
+export type RoomState = 'ready' | 'dirty' | 'inspecting' | 'out-of-service';
+export type HotelRole = 'Front Desk' | 'Housekeeping Lead' | 'Revenue Manager' | 'Duty Manager';
+export interface Stay {
+    id: string;
+    guest: string;
+    roomId?: string;
+    arrival: string;
+    departure: string;
+    state: 'reserved' | 'checked-in' | 'checked-out' | 'cancelled';
+    roomType: string;
+}
+export interface Room {
+    id: string;
+    type: string;
+    state: RoomState;
+    floor: number;
+}
+export interface MaintenanceBlock {
+    id: string;
+    roomId: string;
+    start: string;
+    end: string;
+    reason: string;
+}
+const time = (v: string) => new Date(v).getTime();
+export function overlaps(a: {
+    arrival: string;
+    departure: string;
+}, b: {
+    arrival: string;
+    departure: string;
+}) { return time(a.arrival) < time(b.departure) && time(b.arrival) < time(a.departure); }
+export function availableRooms(rooms: Room[], stays: Stay[], blocks: MaintenanceBlock[], candidate: Stay) { return rooms.filter(room => room.type === candidate.roomType && room.state === 'ready' && !stays.some(stay => stay.id !== candidate.id && stay.roomId === room.id && stay.state !== 'cancelled' && overlaps(stay, candidate)) && !blocks.some(block => block.roomId === room.id && overlaps({ arrival: block.start, departure: block.end }, candidate))); }
+export function assignRoom(stay: Stay, room: Room, stays: Stay[], blocks: MaintenanceBlock[], role: HotelRole): Stay {
+    if (!['Front Desk', 'Duty Manager'].includes(role))
+        throw new Error('Front desk authority is required for room assignment.');
+    if (room.state !== 'ready')
+        throw new Error('Room is not ready for guest arrival.');
+    if (!availableRooms([room], stays, blocks, stay).length)
+        throw new Error('Room conflicts with another stay or maintenance block.');
+    return { ...stay, roomId: room.id };
+}
+export function moveRoom(stay: Stay, target: Room, effectiveAt: string, stays: Stay[], blocks: MaintenanceBlock[], role: HotelRole) {
+    if (stay.state !== 'checked-in')
+        throw new Error('Only an active in-house stay can be moved.');
+    const remaining: Stay = { id: stay.id + '-move', guest: stay.guest, arrival: effectiveAt, departure: stay.departure, state: stay.state, roomType: stay.roomType };
+    return { closedSegment: { ...stay, departure: effectiveAt }, newSegment: assignRoom(remaining, target, stays, blocks, role) };
+}
+export function occupancy(stays: Stay[], at: string, roomCount: number) { const point = time(at); const active = stays.filter(s => s.state !== 'cancelled' && time(s.arrival) <= point && point < time(s.departure)).length; return Math.round(active / roomCount * 1000) / 10; }

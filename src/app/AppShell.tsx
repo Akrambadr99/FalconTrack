@@ -1,0 +1,4 @@
+import { NavLink, Outlet } from 'react-router-dom';
+import { useAppServices } from '../application/useAppServices';
+const links = [['/', 'Overview'], ['/operations', 'Operations'], ['/analytics', 'Analytics'], ['/reports', 'Reports'], ['/workflows', 'Workflows'], ['/governance', 'Governance'], ['/integrations', 'Integrations'], ['/notifications', 'Inbox'], ['/audit', 'Audit'], ['/model', 'Data model'], ['/settings', 'Settings']] as const;
+export function AppShell() { const { product } = useAppServices(); return <div className="suite-shell"><nav className="suite-nav" aria-label="Product navigation"><NavLink className="suite-logo" to="/">{product.name}</NavLink>{links.slice(1).map(([to, label]) => <NavLink key={to} to={to} className={({ isActive }) => isActive ? 'active' : undefined}>{label}</NavLink>)}</nav><Outlet /></div>; }

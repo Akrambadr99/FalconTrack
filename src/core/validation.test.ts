@@ -1,0 +1,3 @@
+import { describe, expect, it } from 'vitest';
+import { required, ValidationBag } from './validation';
+describe('validation', () => { it('collects issues', () => { const bag = new ValidationBag(); bag.require(false, 'name', 'required'); expect(bag.result()).toHaveLength(1); }); it('throws combined errors', () => { const bag = new ValidationBag(); bag.error('x', 'bad'); expect(() => bag.assert()).toThrow(/x: bad/); }); it('keeps warnings nonblocking', () => { const bag = new ValidationBag(); bag.warning('x', 'check'); expect(() => bag.assert()).not.toThrow(); }); it('trims required text', () => expect(required(' value ', 'Label')).toBe('value')); });

@@ -1,15 +1,1 @@
-import { expect, test } from '@playwright/test'
-test('StayPilot opens its durable operations workspace', async ({ page }) => {
-  await page.goto('/')
-  await expect(page.getByText('StayPilot', { exact: true })).toBeVisible()
-  await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
-  await page.getByRole('button', { name: /^Create / }).click()
-  await expect(page.getByRole('heading', { name: 'Create record' })).toBeVisible()
-  await page.getByRole('button', { name: 'Close dialog' }).click()
-  const sections = page.locator('aside > button')
-  if (await sections.count() > 1) await sections.nth(1).click()
-  await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
-  const download = page.waitForEvent('download')
-  await page.getByRole('button', { name: 'Export backup' }).click()
-  await download
-})
+import{expect,test}from'@playwright/test';test('StayPilot exposes routed enterprise workflows',async({page})=>{await page.goto('/');await expect(page.getByRole('heading',{name:'StayPilot command center'})).toBeVisible();await page.getByRole('link',{name:'Operations'}).click();await expect(page.getByRole('heading',{level:1})).toBeVisible();await page.getByRole('link',{name:'Workflows'}).click();await expect(page.getByRole('heading',{name:'Workflow catalog'})).toBeVisible();await page.getByRole('link',{name:'Data model'}).click();await expect(page.getByRole('heading',{name:'Connected data model'})).toBeVisible()})

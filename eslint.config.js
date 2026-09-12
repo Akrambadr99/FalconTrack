@@ -97,6 +97,7 @@ export default tseslint.config(
     files: ['src/**/*.test.{ts,tsx}'],
     rules: {
       '@typescript-eslint/no-non-null-assertion': 'off',
+      '@typescript-eslint/no-confusing-void-expression': 'off',
     },
   },
   {
