@@ -52,3 +52,27 @@ test('front desk extends an in-house stay and recalculates only added nights',as
  await page.getByRole('button',{name:/^Stay extension history/}).click();await expect(page.locator('.detail')).toContainText('30,000');
  await expect(page.locator('.detail')).toContainText('Room 204');
 });
+
+
+test('approved guest credit changes settlement and enables checkout', async ({ page }) => {
+    await page.goto('/operations');
+    const actor = page.getByRole('combobox', { name: 'Current actor' });const dialog = page.getByRole('dialog');
+    const save = async () => { await dialog.getByRole('button', { name: 'Save command', exact: true }).click();await expect(dialog).toHaveCount(0); };
+    await actor.selectOption('actor-1');await page.getByRole('button', { name: /^Guest reservations/ }).click();
+    await page.getByRole('button', { name: 'Check in guest', exact: true }).click();await save();
+    await page.getByRole('button', { name: /^Guest folios/ }).click();
+    await page.getByRole('button', { name: 'Request folio adjustment', exact: true }).click();
+    await dialog.getByRole('spinbutton', { name: 'Adjustment amount (cents)', exact: true }).fill('5000');
+    await dialog.getByLabel('Adjustment reference', { exact: true }).fill('SERVICE-UI-001');
+    await dialog.getByLabel('Adjustment rationale', { exact: true }).fill('Guest service recovery credit for an interrupted arrival.');await save();
+    await page.getByRole('button', { name: /^Folio adjustments/ }).click();await actor.selectOption('actor-0');
+    await page.getByRole('button', { name: 'Approve and apply adjustment', exact: true }).click();
+    await dialog.getByLabel('Adjustment rationale', { exact: true }).fill('Duty manager reviewed and approved the service recovery credit.');await save();
+    await page.reload();await page.getByRole('button', { name: /^Guest folios/ }).click();
+    await expect(page.locator('.detail dl')).toContainText('40,000');
+    await actor.selectOption('actor-1');await page.getByRole('button', { name: 'Post folio payment', exact: true }).click();
+    await dialog.getByRole('spinbutton', { name: 'Payment (cents)', exact: true }).fill('40000');await save();
+    await page.getByRole('button', { name: /^Guest reservations/ }).click();
+    await page.getByRole('button', { name: 'Check out and queue clean', exact: true }).click();await save();
+    await expect(page.locator('.detail-title')).toContainText('checked-out');
+});

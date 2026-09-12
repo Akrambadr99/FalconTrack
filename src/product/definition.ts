@@ -1,3 +1,4 @@
+import { folioAdjustmentKind, folioAdjustmentOperations } from '../occupancy/folio-adjustments';
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 import type { Product, Kind, Field, Operation, Entity } from '../workspace/types';
 import { entity, find, rows, total, text, number, requireThat, money, overlaps } from '../workspace/values';
@@ -42,7 +43,7 @@ const operations: Operation[] = [
                 entity.status = 'settled';
             return 'Guest payment posted to folio.';
         } },
-    { key: 'checkout', label: 'Check out and queue clean', kind: 'stay', from: ['checked-in'], roles: [roles[0]!, roles[1]!], run: ({ state, entity, add }) => { requireThat(linked(state.entities, 'folio', 'stay', entity.id).every(row => row.status === 'settled'), 'Settle the guest folio before checkout.'); entity.status = 'checked-out'; const room = find(state.entities, text(entity.fields, 'room')); room.status = 'dirty'; add('task', 'Checkout clean · ' + room.title, { room: room.id, stay: entity.id, assignee: 'Housekeeping team' }); return 'Guest checked out; room marked dirty and cleaning task created.'; } },
+    { key: 'checkout', label: 'Check out and queue clean', kind: 'stay', from: ['checked-in'], roles: [roles[0]!, roles[1]!], run: ({ state, entity, add }) => { requireThat(!rows(state.entities, 'folio-adjustment').some(item => item.status === 'requested' && linked(state.entities, 'folio', 'stay', entity.id).some(folio => folio.id === item.fields['folio'])), 'Resolve pending folio adjustments before checkout.'); requireThat(linked(state.entities, 'folio', 'stay', entity.id).every(row => row.status === 'settled'), 'Settle the guest folio before checkout.'); entity.status = 'checked-out'; const room = find(state.entities, text(entity.fields, 'room')); room.status = 'dirty'; add('task', 'Checkout clean · ' + room.title, { room: room.id, stay: entity.id, assignee: 'Housekeeping team' }); return 'Guest checked out; room marked dirty and cleaning task created.'; } },
     { key: 'clean', label: 'Finish room cleaning', kind: 'task', from: ['queued'], roles: [roles[2]!], run: ({ state, entity }) => { const room = find(state.entities, text(entity.fields, 'room')); requireThat(room.status === 'dirty', 'Room must be dirty before cleaning.'); entity.status = 'cleaned'; room.status = 'inspecting'; return 'Cleaning complete; room awaits inspection.'; } },
     { key: 'inspect', label: 'Pass room inspection', kind: 'task', from: ['cleaned'], roles: [roles[0]!, roles[2]!], run: ({ state, entity, actor, now, add }) => { const room = find(state.entities, text(entity.fields, 'room')); requireThat(room.status === 'inspecting', 'Room is not awaiting inspection.'); add('inspection-record','Passed room inspection - '+room.title,{task:entity.id,room:room.id,result:'passed',inspector:actor.id,at:now,note:'Room accepted after housekeeping inspection.'}); entity.status = 'inspected'; room.status = 'ready'; return 'Inspection passed; room returned to ready inventory.'; } },
     { key: 'cancel', label: 'Cancel reservation', kind: 'stay', from: ['reserved'], roles: [roles[0]!, roles[1]!], run: ({ entity }) => { entity.status = 'cancelled'; return 'Reservation cancelled and room dates released.'; } },
@@ -118,6 +119,8 @@ operations.push({key:'extend-stay',label:'Extend in-house stay',kind:'stay',from
     add('extension','Extension · '+entity.title,{stay:entity.id,room:room.id,previousDeparture:previous,newDeparture:next,rate,charge,actor:actor.id,reason:text(input,'reason').trim()});
     return 'Stay extended by '+String(nights)+' nights; open folio increased by the current room rate.';
 }});
+kinds.push(folioAdjustmentKind);
+operations.push(...folioAdjustmentOperations);
 const validate: Product['validate'] = entities => {
     for (const stay of rows(entities, 'stay')) { const since = stay.fields['roomSince']; requireThat(!since || (typeof since === 'string' && since >= text(stay.fields, 'arrival') && since < text(stay.fields, 'departure')), 'Current occupancy date must be within the reserved stay.'); }
     const stays = rows(entities, 'stay').filter(row => !['cancelled', 'checked-out'].includes(row.status));
