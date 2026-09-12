@@ -102,6 +102,22 @@ operations.push(
         return 'Guest moved: destination occupied, previous room dirty, cleaning queued; booked folio charges preserved.';
     } },
 );
+kinds.push(kind('extension','Stay extension history',['recorded'],[],[ref('stay','Guest stay','stay'),ref('room','Extended room','room'),date('previousDeparture','Previous departure'),date('newDeparture','New departure'),num('rate','Nightly rate (cents)',1,1),num('charge','Added charges (cents)',1,1),txt('actor','Extending actor'),txt('reason','Extension reason')]));
+operations.push({key:'extend-stay',label:'Extend in-house stay',kind:'stay',from:['checked-in'],roles:[roles[0]!,roles[1]!],fields:[date('departure','New departure'),txt('reason','Extension reason')],run:({state,entity,actor,input,add}) => {
+    const previous=text(entity.fields,'departure'),next=text(input,'departure'),room=find(state.entities,text(entity.fields,'room'),'room');
+    requireThat(next > previous,'New departure must be after the current departure.');
+    requireThat(room.status === 'occupied','The currently assigned room is not occupied by this stay.');
+    requireThat(!rows(state.entities,'move').some(item => item.fields['stay'] === entity.id && item.status === 'planned'),'Resolve the planned room move before extending this stay.');
+    requireThat(!linked(state.entities,'stay','room',room.id).some(item => item.id !== entity.id && !['cancelled','checked-out'].includes(item.status) && overlaps(previous,next,occupancyStart(item),text(item.fields,'departure'))),'Room has a conflicting reservation during the extension.');
+    requireThat(!linked(state.entities,'block','room',room.id).some(item => item.status === 'scheduled' && overlaps(previous,next,text(item.fields,'start'),text(item.fields,'end'))),'Room has a maintenance block during the extension.');
+    const folios=linked(state.entities,'folio','stay',entity.id);
+    requireThat(folios.length === 1 && folios[0]!.status === 'open','A unique open folio is required before extending the stay.');
+    requireThat(text(input,'reason').trim().length >= 12,'Provide a specific stay extension reason.');
+    const nights=Math.round((Date.parse(next)-Date.parse(previous))/86400000),rate=number(room.fields,'rate'),charge=nights*rate;
+    folios[0]!.fields['charges']=number(folios[0]!.fields,'charges')+charge;entity.fields['departure']=next;
+    add('extension','Extension · '+entity.title,{stay:entity.id,room:room.id,previousDeparture:previous,newDeparture:next,rate,charge,actor:actor.id,reason:text(input,'reason').trim()});
+    return 'Stay extended by '+String(nights)+' nights; open folio increased by the current room rate.';
+}});
 const validate: Product['validate'] = entities => {
     for (const stay of rows(entities, 'stay')) { const since = stay.fields['roomSince']; requireThat(!since || (typeof since === 'string' && since >= text(stay.fields, 'arrival') && since < text(stay.fields, 'departure')), 'Current occupancy date must be within the reserved stay.'); }
     const stays = rows(entities, 'stay').filter(row => !['cancelled', 'checked-out'].includes(row.status));

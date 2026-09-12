@@ -40,3 +40,15 @@ test('failed room inspection requeues cleaning and preserves evidence after reco
  await page.getByRole('button',{name:/^Room 204 /}).click();await expect(page.locator('.detail-title')).toContainText('dirty');
  await actor.selectOption('actor-2');await panel.getByRole('button',{name:'Run: Finish room cleaning',exact:true}).click();await save();await panel.getByRole('button',{name:'Run: Pass room inspection',exact:true}).click();await save();await page.reload();await expect(panel).toContainText('failed: Bathroom floor');await expect(panel).toContainText('passed: Room accepted');await expect(page.locator('.detail-title')).toContainText('ready');
 });
+
+test('front desk extends an in-house stay and recalculates only added nights',async({page})=>{
+ await page.goto('/operations');const dialog=page.getByRole('dialog');const save=async()=>{await dialog.getByRole('button',{name:'Save command',exact:true}).click();await expect(dialog).toHaveCount(0);};
+ await page.getByRole('combobox',{name:'Current actor'}).selectOption('actor-1');
+ await page.getByRole('button',{name:/^Guest reservations/}).click();await page.getByRole('button',{name:'Check in guest',exact:true}).click();await save();
+ await page.getByRole('button',{name:'Extend in-house stay',exact:true}).click();await dialog.getByLabel('New departure',{exact:true}).fill('2026-09-17');
+ await dialog.getByLabel('Extension reason',{exact:true}).fill('Guest extended the business visit.');await save();await page.reload();
+ await page.getByRole('button',{name:/^Guest reservations/}).click();await expect(page.locator('.detail')).toContainText('2026-09-17');
+ await page.getByRole('button',{name:/^Guest folios/}).click();await expect(page.locator('.detail')).toContainText('75,000');
+ await page.getByRole('button',{name:/^Stay extension history/}).click();await expect(page.locator('.detail')).toContainText('30,000');
+ await expect(page.locator('.detail')).toContainText('Room 204');
+});

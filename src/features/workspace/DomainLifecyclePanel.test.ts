@@ -56,3 +56,20 @@ describe('atomic guest room moves', () => {
         expect(repository.read().entities.filter(item => item.kind === 'task')).toHaveLength(1);
     });
 });
+
+describe('in-house stay extension',()=>{
+ it('extends occupancy and adds only the extra nights to the open folio',()=>{
+  let state=run(fresh(product),'checkin','stay-1','checkin');
+  state=run(state,'extend','stay-1','extend-stay','actor-1',{departure:'2026-09-17',reason:'Guest extended the business visit.'});
+  expect(state.entities.find(item=>item.id==='stay-1')?.fields['departure']).toBe('2026-09-17');
+  expect(state.entities.find(item=>item.id==='checkin-1')?.fields['charges']).toBe(75000);
+  expect(state.entities.find(item=>item.id==='extend-1')).toMatchObject({kind:'extension',fields:{previousDeparture:'2026-09-15',newDeparture:'2026-09-17',charge:30000}});
+ });
+ it('rejects reservation conflicts and settled folios without partial changes',()=>{
+  const state=run(fresh(product),'checkin','stay-1','checkin');
+  state.entities.push(entity('stay-2','stay','reserved',{room:'room-1',arrival:'2026-09-16',departure:'2026-09-18',guest:'Next guest'}));
+  const before=structuredClone(state);expect(()=>run(state,'conflict','stay-1','extend-stay','actor-1',{departure:'2026-09-17',reason:'Guest extended the business visit.'})).toThrow('conflicting reservation');expect(state).toEqual(before);
+  state.entities.pop();const folio=state.entities.find(item=>item.id==='checkin-1');if(!folio)throw new Error('Missing folio');folio.status='settled';
+  const settled=structuredClone(state);expect(()=>run(state,'paid','stay-1','extend-stay','actor-1',{departure:'2026-09-17',reason:'Guest extended the business visit.'})).toThrow('open folio');expect(state).toEqual(settled);
+ });
+});
