@@ -28,3 +28,15 @@ test('room move retries a failed save and completes housekeeping after reload', 
     await expect(page.locator('.detail-title')).toContainText('ready');
     await page.getByRole('button', { name: /^Room 501 / }).click(); await expect(page.locator('.detail-title')).toContainText('occupied');
 });
+
+
+test('failed room inspection requeues cleaning and preserves evidence after recovery',async({page})=>{
+ await page.clock.setFixedTime(new Date('2026-09-12T12:00:00Z'));await page.goto('/operations');const actor=page.getByRole('combobox',{name:'Current actor'});const dialog=page.getByRole('dialog');const panel=page.getByRole('region',{name:'Checkout readiness gate'});
+ const save=async()=>{await dialog.getByRole('button',{name:'Save command',exact:true}).click();await expect(dialog).toHaveCount(0);};
+ await page.getByRole('button',{name:/^Guest reservations/}).click();await page.getByRole('button',{name:'Check in guest',exact:true}).click();await save();
+ await panel.getByRole('button',{name:'Run: Post folio payment',exact:true}).click();await dialog.getByLabel('Payment (cents)',{exact:true}).fill('45000');await save();await panel.getByRole('button',{name:'Run: Check out and queue clean',exact:true}).click();await save();
+ await actor.selectOption('actor-2');await panel.getByRole('button',{name:'Run: Finish room cleaning',exact:true}).click();await save();await panel.getByRole('button',{name:'Run: Reject room inspection',exact:true}).click();await dialog.getByLabel('Inspection findings',{exact:true}).fill('short');await dialog.getByRole('button',{name:'Save command',exact:true}).click();await expect(dialog.getByRole('alert')).toContainText('cleaning defect');
+ await dialog.getByLabel('Inspection findings',{exact:true}).fill('Bathroom floor needs another cleaning pass.');await save();await page.reload();await expect(panel).toContainText('failed: Bathroom floor');
+ await page.getByRole('button',{name:/^Room 204 /}).click();await expect(page.locator('.detail-title')).toContainText('dirty');
+ await actor.selectOption('actor-2');await panel.getByRole('button',{name:'Run: Finish room cleaning',exact:true}).click();await save();await panel.getByRole('button',{name:'Run: Pass room inspection',exact:true}).click();await save();await page.reload();await expect(panel).toContainText('failed: Bathroom floor');await expect(panel).toContainText('passed: Room accepted');await expect(page.locator('.detail-title')).toContainText('ready');
+});

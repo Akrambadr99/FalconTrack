@@ -75,9 +75,9 @@ export function WorkspacePage() {
         setTitle(selected.title);
         setDialog('edit');
     };
-    const openOperation = (key: string) => {
+    const openOperation = (key: string, targetId = selectedId) => {
         const selectedOperation = product.operations.find(item => item.key === key);
-        setCommandRevision(snapshot.revision); setCommandTarget(selectedId); setCommandActor(actorId); setCommandError('');
+        setCommandRevision(snapshot.revision); setCommandTarget(targetId); setCommandActor(actorId); setCommandError('');
         setOperation(key); setValues(initialValues(selectedOperation?.fields ?? [])); setDialog('operate');
     };
     const submit = (event: FormEvent) => {
@@ -87,7 +87,7 @@ export function WorkspacePage() {
             commit({ id, expectedRevision: snapshot.revision, actorId, type: 'create', kind, title, input: values });
         else if (dialog === 'edit' && selected)
             commit({ id, expectedRevision: snapshot.revision, actorId, type: 'edit', entityId: selected.id, title, input: values });
-        else if (dialog === 'operate' && selected)
+        else if (dialog === 'operate')
             commit({ id, expectedRevision: commandRevision, actorId: commandActor, type: 'operate', entityId: commandTarget, operation, input: values });
     };
     const formFields = dialog === 'operate' ? product.operations.find(item => item.key === operation)?.fields ?? [] : definition?.fields ?? [];
@@ -110,7 +110,7 @@ export function WorkspacePage() {
     <header><div className="brand"><span>{product.name.slice(0, 1)}</span><div><strong>{product.name}</strong><small>{product.description}</small></div></div><label className="actor">Working as<select aria-label="Current actor" value={actorId} onChange={event => setActorId(event.target.value)}>{product.actors.map(actor => <option key={actor.id} value={actor.id}>{actor.name} · {actor.role}</option>)}</select></label></header>
     <div className="layout"><aside><p>Operations</p>{product.kinds.map(item => <button key={item.key} className={kind === item.key ? 'active' : ''} onClick={() => { setKind(item.key); setStatus(''); }}><span>{item.label}</span><b>{snapshot.entities.filter(entity => entity.kind === item.key).length}</b></button>)}<div className="aside-actions"><button onClick={() => download(product.name + '-backup.json', JSON.stringify(snapshot, null, 2), 'application/json')}>Export backup</button><button onClick={() => importRef.current?.click()}>Restore backup</button><input ref={importRef} hidden type="file" accept="application/json" onChange={event => void importBackup(event)}/></div></aside>
       <main><section className="hero"><div><small>LIVE WORKSPACE · REVISION {snapshot.revision}</small><h1>{definition?.label}</h1><p>Connected records, guarded commands, durable history.</p></div><button className="primary" onClick={openCreate}>Create {definition?.label.toLowerCase()}</button></section>
-        <section className="metrics">{product.metrics(snapshot.entities).map(metric => <article key={metric.label}><small>{metric.label}</small><strong>{metric.value}</strong></article>)}</section><DomainWorkflowPanel snapshot={snapshot}/><DomainDepthPanel snapshot={snapshot}/><DomainLifecyclePanel snapshot={snapshot}/>
+        <section className="metrics">{product.metrics(snapshot.entities).map(metric => <article key={metric.label}><small>{metric.label}</small><strong>{metric.value}</strong></article>)}</section><DomainWorkflowPanel snapshot={snapshot}/><DomainDepthPanel snapshot={snapshot} actorId={actorId} onExecute={openOperation}/><DomainLifecyclePanel snapshot={snapshot}/>
         {notice && <p role="status" className="notice">{notice}</p>}
         <section className="workspace"><div className="list"><div className="filters"><input aria-label="Search records" placeholder="Search records…" value={query} onChange={event => setQuery(event.target.value)}/><select aria-label="Filter status" value={status} onChange={event => setStatus(event.target.value)}><option value="">All states</option>{definition?.states.map(item => <option key={item}>{item}</option>)}</select><button title="Export current view" onClick={() => download(kind + '.csv', csv(rows), 'text/csv')}>CSV</button></div>{rows.map(row => <button className={selectedId === row.id ? 'row selected' : 'row'} key={row.id} onClick={() => setSelectedId(row.id)}><span><strong>{row.title}</strong><small>{row.id} · r{row.revision}</small></span><em>{row.status}</em></button>)}{rows.length === 0 && <p className="empty">No records match this view.</p>}</div>
           <div className="detail">{selected ? <><div className="detail-title"><div><small>{selected.kind.toUpperCase()}</small><h2>{selected.title}</h2></div><span>{selected.status}</span></div><dl>{definition?.fields.map(field => <div key={field.key}><dt>{field.label}</dt><dd>{display(selected.fields[field.key], snapshot.entities)}</dd></div>)}</dl><div className="toolbar"><button onClick={openEdit}>Edit draft</button>{available.map(item => <button className="primary" key={item.key} onClick={() => openOperation(item.key)}>{item.label}</button>)}</div><Linked entity={selected} snapshot={snapshot}/><History entity={selected} snapshot={snapshot}/></> : <p className="empty">Choose a record to inspect it.</p>}</div></section>

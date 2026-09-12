@@ -44,7 +44,7 @@ const operations: Operation[] = [
         } },
     { key: 'checkout', label: 'Check out and queue clean', kind: 'stay', from: ['checked-in'], roles: [roles[0]!, roles[1]!], run: ({ state, entity, add }) => { requireThat(linked(state.entities, 'folio', 'stay', entity.id).every(row => row.status === 'settled'), 'Settle the guest folio before checkout.'); entity.status = 'checked-out'; const room = find(state.entities, text(entity.fields, 'room')); room.status = 'dirty'; add('task', 'Checkout clean · ' + room.title, { room: room.id, stay: entity.id, assignee: 'Housekeeping team' }); return 'Guest checked out; room marked dirty and cleaning task created.'; } },
     { key: 'clean', label: 'Finish room cleaning', kind: 'task', from: ['queued'], roles: [roles[2]!], run: ({ state, entity }) => { const room = find(state.entities, text(entity.fields, 'room')); requireThat(room.status === 'dirty', 'Room must be dirty before cleaning.'); entity.status = 'cleaned'; room.status = 'inspecting'; return 'Cleaning complete; room awaits inspection.'; } },
-    { key: 'inspect', label: 'Pass room inspection', kind: 'task', from: ['cleaned'], roles: [roles[0]!, roles[2]!], run: ({ state, entity }) => { const room = find(state.entities, text(entity.fields, 'room')); requireThat(room.status === 'inspecting', 'Room is not awaiting inspection.'); entity.status = 'inspected'; room.status = 'ready'; return 'Inspection passed; room returned to ready inventory.'; } },
+    { key: 'inspect', label: 'Pass room inspection', kind: 'task', from: ['cleaned'], roles: [roles[0]!, roles[2]!], run: ({ state, entity, actor, now, add }) => { const room = find(state.entities, text(entity.fields, 'room')); requireThat(room.status === 'inspecting', 'Room is not awaiting inspection.'); add('inspection-record','Passed room inspection - '+room.title,{task:entity.id,room:room.id,result:'passed',inspector:actor.id,at:now,note:'Room accepted after housekeeping inspection.'}); entity.status = 'inspected'; room.status = 'ready'; return 'Inspection passed; room returned to ready inventory.'; } },
     { key: 'cancel', label: 'Cancel reservation', kind: 'stay', from: ['reserved'], roles: [roles[0]!, roles[1]!], run: ({ entity }) => { entity.status = 'cancelled'; return 'Reservation cancelled and room dates released.'; } },
     { key: 'release', label: 'Release maintenance block', kind: 'block', from: ['scheduled'], roles: [roles[0]!], run: ({ entity }) => { entity.status = 'released'; return 'Maintenance date block released.'; } },
 ];
@@ -60,7 +60,15 @@ const moveDetails = (entities: Entity[], stay: Entity, input: Record<string, str
     requireThat(text(input, 'reason').trim().length >= 12, 'Provide a specific reason for the room move.');
     return { stay: stay.id, source: text(stay.fields, 'room'), target: target.id, stayVersion: stay.revision, targetVersion: target.revision, reason: text(input, 'reason').trim() };
 };
+kinds.push(kind('inspection-record','Room inspection history',['recorded'],[],[ref('task','Cleaning task','task'),ref('room','Inspected room','room'),choice('result','Inspection result',['passed','failed']),txt('inspector','Inspecting actor'),txt('at','Inspection time'),txt('note','Inspection findings')]));
 operations.push(
+    {key:'fail-room-inspection',label:'Reject room inspection',kind:'task',from:['cleaned'],roles:[roles[0]!,roles[2]!],fields:[txt('note','Inspection findings')],run:({state,entity,actor,input,now,add}) => {
+        const room=find(state.entities,text(entity.fields,'room'),'room');
+        requireThat(room.status === 'inspecting','Room is not awaiting inspection.');
+        requireThat(text(input,'note').trim().length >= 12,'Describe the cleaning defect requiring another pass.');
+        add('inspection-record','Failed room inspection - '+room.title,{task:entity.id,room:room.id,result:'failed',inspector:actor.id,at:now,note:text(input,'note').trim()});
+        entity.status='queued';room.status='dirty';return 'Room inspection rejected; cleaning requeued and room kept unavailable.';
+    }},
     { key: 'plan-move', label: 'Plan guest room move', kind: 'stay', from: ['checked-in'], roles: [roles[0]!, roles[1]!], fields: moveFields, run: ({ state, entity, actor, input, add }) => {
         requireThat(!rows(state.entities, 'move').some(item => item.fields['stay'] === entity.id && item.status === 'planned'), 'A room move is already planned. Revise or cancel it.');
         add('move', 'Room move · ' + entity.title, { ...moveDetails(state.entities, entity, input), owner: actor.id });
