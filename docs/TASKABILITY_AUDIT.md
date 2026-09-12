@@ -27,3 +27,9 @@ Expanded strong count: **26**.
 ## Strongest 15 candidates
 
 Directions **1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 18, 31, 33, 35, and 37** are the final shortlist. Their React judgment is respectively: room/stay dependent selection; combined overlap/readiness reasons; stale room recovery; refreshed availability; asynchronous check-in ownership; optimistic folio rollback; partial arrival planning; reservation conflict recovery; immutable recurrence editing; actor change during active inspection; cross-tab choice reconciliation; stay/folio/room derivation; late-charge revocation; room-move ownership; and early-checkout recalculation before readiness.
+
+## Room move directions 41–50
+
+41. **Strong candidate · Medium-Hard:** room move combines in-house status, destination state, date, stays, and maintenance. 42. **Strong candidate · Medium:** destination changes preserve stay and effective date. 43. **Strong candidate · Medium-Hard:** a late maintenance block revokes a staged move. 44. **Strong candidate · Medium:** the current room cannot be selected as destination. 45. **Strong candidate · Medium-Hard:** overlapping reservations block only the affected destination. 46. **Strong candidate · Medium:** move date boundaries follow arrival and departure precisely. 47. **Strong candidate · Medium-Hard:** room-status refresh updates readiness without losing the move draft. 48. **Strong candidate · Medium:** cancelled and checked-out stays do not block availability. 49. **Too Easy:** rename Destination room. 50. **Too Hard:** synchronize the move with live channel managers.
+
+Current strong count: **34**. Revised strongest 15: **1, 2, 3, 4, 6, 7, 8, 9, 18, 31, 33, 35, 37, 41, and 43**.
