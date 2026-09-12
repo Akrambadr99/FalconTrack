@@ -25,6 +25,19 @@ This catalog identifies legitimate future **Write** task directions. It does not
 | 17 | Safe CSV export | Exported cells that begin with spreadsheet formulas remain inert while quotes and newlines round-trip. | reporting CSV and workspace export |
 | 18 | Cross-tab synchronization | A storage update refreshes the owning workspace without replacing an active local draft. | storage listener, draft registry, repository |
 
+| 19 | Comment mentions | Mention recipients are deduplicated and remain correct when text is edited around the cursor. | capabilities/comments and an existing detail page |
+| 20 | Comment lifecycle | Authors can edit or delete their own comment while audit history retains a tombstone. | capabilities/comments/thread.ts and detail history |
+| 21 | Attachment policy | Invalid name, size, type, extension, and duplicate cases produce specific visible feedback. | capabilities/attachments and an existing editor |
+| 22 | Activity explorer | Actor, action, entity, date, and text filters combine without mutating history. | capabilities/activity and audit or history pages |
+| 23 | Approval delegation | Effective approvers respect date ranges, revocation, overlap, and deny self-delegation. | capabilities/approvals and approval workflows |
+| 24 | Recurring schedules | Daily and weekly rules expand deterministically across month boundaries with bounded counts. | capabilities/scheduling and planning workflows |
+| 25 | Webhook delivery | Transient failures requeue with attempt state while successful delivery remains terminal and idempotent. | capabilities/webhooks and integration status |
+| 26 | Import field mapping | Header mappings trim values, preserve row ownership, and report required-field errors before commit. | capabilities/imports and Data tools |
+| 27 | Access matrix | Explicit deny rules override broad allows and the UI lists only effective actions. | capabilities/access and role-gated commands |
+| 28 | Bulk workflow plan | A preview separates eligible records from skipped records before any command executes. | capabilities/workflows and Operations |
+| 29 | Structured search | Field filters, quoted phrases, free text, and negation combine into one stable query. | capabilities/search and list filters |
+| 30 | Cursor pagination | Stable cursors continue after the exact record and reject stale or malformed positions. | capabilities/pagination and long record lists |
+
 ## Candidate selection rules
 
 Choose one trigger and one observable outcome. Prove the exact baseline behavior before editing. Prefer a small existing-source patch, keep unrelated refactors out, validate focused and full gates under Node 20.19.5, and keep local proof separate from external Minerva acceptance.
