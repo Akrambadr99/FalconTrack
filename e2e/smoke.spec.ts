@@ -76,3 +76,12 @@ test('approved guest credit changes settlement and enables checkout', async ({ p
     await page.getByRole('button', { name: 'Check out and queue clean', exact: true }).click();await save();
     await expect(page.locator('.detail-title')).toContainText('checked-out');
 });
+
+test('arrival recovery assigns approved inventory and persists its custody trail',async({page})=>{
+ await page.goto('/stay-control');const role=page.getByLabel('Hotel role');
+ await page.getByRole('button',{name:'Open arrival recovery'}).click();await expect(page.getByRole('status')).toContainText('opened');
+ await role.selectOption('Duty Manager');await page.getByRole('button',{name:'Approve alternative room'}).click();
+ await role.selectOption('Front Desk');await page.getByRole('button',{name:'Complete room assignment'}).click();await page.reload();
+ await expect(page.getByRole('heading',{name:'Arrival recovery',exact:true}).locator('..')).toContainText('resolved · room room-205');
+ await expect(page.getByRole('region',{name:'Stay control history'})).toContainText('arrival-recovery-resolved');
+});
