@@ -17,3 +17,9 @@ Allocation combines stay selection, room selection, readiness, overlap, and refr
 **Too Hard (3):** 28 replace booking; 29 migrate every reservation; 30 coordinate channel managers and payment systems.
 
 Strong count: **18**, with deterministic date, ownership, transition, and conflict behavior.
+
+## Depth expansion directions 31–40
+
+31. **Strong candidate · Medium-Hard:** checkout combines stay state, settled folio, balance, and room occupancy. 32. **Strong candidate · Medium:** stay switching recomputes balance and blockers. 33. **Strong candidate · Medium-Hard:** a late charge revokes checkout readiness. 34. **Strong candidate · Medium:** equal charges/payments derive zero outstanding balance. 35. **Strong candidate · Medium-Hard:** room move updates checkout ownership without losing folio state. 36. **Strong candidate · Medium:** settled status and numeric balance failures remain distinct. 37. **Strong candidate · Medium-Hard:** early checkout recalculates charges before readiness. 38. **Strong candidate · Medium:** cancelled stays never appear ready for checkout. 39. **Too Easy:** rename Outstanding folio. 40. **Too Hard:** coordinate checkout with live payment and channel systems.
+
+Expanded strong count: **26**.
