@@ -14,4 +14,5 @@ children.splice(10,0,{path:'rate-distribution',lazy:async()=>({Component:(await 
 children.splice(11,0,{path:'folio-disputes',lazy:async()=>({Component:(await import('../folio-disputes/FolioDisputesPage')).FolioDisputesPage})});
 children.splice(12,0,{path:'housekeeping-supplies',lazy:async()=>({Component:(await import('../housekeeping-supplies/HousekeepingSuppliesPage')).HousekeepingSuppliesPage})});
 children.splice(13,0,{path:'group-billing',lazy:async()=>({Component:(await import('../group-billing/GroupBillingPage')).GroupBillingPage})});
+children.splice(14,0,{path:'guest-identity',lazy:async()=>({Component:(await import('../guest-identity/GuestIdentityPage')).GuestIdentityPage})});
 export const browserRouter = createBrowserRouter([{ path: '/', Component: AppShell, HydrateFallback: RouteLoading, children }]);
