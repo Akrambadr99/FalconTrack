@@ -1,0 +1,9 @@
+import { describe, expect, it } from 'vitest';
+import { approveRateChange, confirmBooking, draftRateChange, initialRateDistributionState, publishRate, type RateRole } from './rate-distribution';
+const meta = (id: string, revision: number, actor: string, role: RateRole) => ({ id, expectedRevision: revision, actor: { id: actor, role } });
+function approved() { const state = draftRateChange(initialRateDistributionState, { ...meta('draft', 0, 'analyst', 'Revenue Analyst'), proposedAmount: 275 }); return approveRateChange(state, meta('approve', 1, 'manager', 'Revenue Manager')); }
+describe('rate distribution', () => {
+  it('publishes every channel and confirms a current quote', () => { let state = publishRate(approved(), meta('publish', 2, 'distribution', 'Distribution Operator')); state = confirmBooking(state, { ...meta('book', 3, 'reservation', 'Reservation Agent'), channel: 'DIRECT', quotedRateVersion: 12 }); expect(state.channels.every((channel) => channel.amount === 275 && channel.status === 'synced')).toBe(true); expect(state.bookings[0]).toMatchObject({ amount: 275, rateVersion: 12 }); expect(state.inventory.reserved).toBe(15); });
+  it('rolls every channel back after a partial publication failure', () => { const state = publishRate(approved(), { ...meta('publish', 2, 'distribution', 'Distribution Operator'), failedChannel: 'OTA' }); expect(state.change?.status).toBe('rolled-back'); expect(state.rate.amount).toBe(240); expect(state.channels.every((channel) => channel.amount === 240 && channel.status === 'synced')).toBe(true); });
+  it('rejects an obsolete channel quote', () => { const state = publishRate(approved(), meta('publish', 2, 'distribution', 'Distribution Operator')); expect(() => confirmBooking(state, { ...meta('book', 3, 'reservation', 'Reservation Agent'), channel: 'DIRECT', quotedRateVersion: 11 })).toThrow('stale'); });
+});
