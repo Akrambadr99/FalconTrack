@@ -9,4 +9,5 @@ children.splice(5,0,{path:'guest-recovery',lazy:async()=>({Component:(await impo
 children.splice(6,0,{path:'no-show-control',lazy:async()=>({Component:(await import('../no-show-control/NoShowControlPage')).NoShowControlPage})});
 children.splice(7,0,{path:'stay-dossier',lazy:async()=>({Component:(await import('../stay-dossier/StayDossierPage')).StayDossierPage})});
 children.splice(8,0,{path:'service-settlement',lazy:async()=>({Component:(await import('../service-settlement/ServiceSettlementPage')).ServiceSettlementPage})});
+children.splice(9,0,{path:'turnover-planning',lazy:async()=>({Component:(await import('../turnover-planning/TurnoverPlanningPage')).TurnoverPlanningPage})});
 export const browserRouter = createBrowserRouter([{ path: '/', Component: AppShell, HydrateFallback: RouteLoading, children }]);
