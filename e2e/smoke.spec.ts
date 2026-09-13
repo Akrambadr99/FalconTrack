@@ -76,6 +76,7 @@ test('approved guest credit changes settlement and enables checkout', async ({ p
     await page.getByRole('button', { name: 'Check out and queue clean', exact: true }).click();await save();
     await expect(page.locator('.detail-title')).toContainText('checked-out');
 });
+test('approved group block preserves pickup and releases unused rooms',async({page})=>{await page.goto('/group-allotment');const role=page.getByRole('combobox',{name:'Group role'});await page.getByRole('button',{name:'Propose group block'}).click();await role.selectOption('Revenue Manager');await page.getByRole('button',{name:'Approve group block'}).click();await role.selectOption('Sales');await page.getByRole('button',{name:'Activate group block'}).click();await role.selectOption('Front Desk');await page.getByRole('button',{name:'Pick up group reservation'}).click();await role.selectOption('Revenue Manager');await page.getByRole('button',{name:'Release unused inventory'}).click();await expect(page.getByRole('status')).toContainText('released');await page.reload();await expect(page.getByText('released · 7 sellable rooms')).toBeVisible();await expect(page.getByRole('region',{name:'Group inventory history'})).toContainText('group-reservation-picked-up')});
 
 test('arrival recovery assigns approved inventory and persists its custody trail',async({page})=>{
  await page.goto('/stay-control');const role=page.getByLabel('Hotel role');
