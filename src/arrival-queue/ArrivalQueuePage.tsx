@@ -25,19 +25,23 @@ export function ArrivalQueuePage() {
   const [state, setState] = useState<ArrivalQueueState>(() => repository.read());
   const [role, setRole] = useState<ArrivalRole>('Front Desk');
   const [message, setMessage] = useState('');
+  const [feedbackTone, setFeedbackTone] = useState<'success' | 'error'>('success');
   const feedback = useRef<HTMLParagraphElement>(null);
   const meta = () => ({ id: crypto.randomUUID(), expectedRevision: state.revision, actor: { id: actors[role], role } });
   const run = (operation: (value: ArrivalQueueState) => ArrivalQueueState, success: string) => {
     try {
       setState(repository.commit(state.revision, operation));
       setMessage(success);
+      setFeedbackTone('success');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Arrival queue action failed.');
+      setFeedbackTone('error');
     }
     queueMicrotask(() => feedback.current?.focus());
   };
   const selected = state.reservations.find((item) => state.selectedIds.includes(item.id));
   const matchingRoom = state.rooms.find((room) => room.roomType === selected?.roomType && room.occupancy === 'available');
+  const stage = selected ? selected.status === 'checked-in' ? 4 : selected.roomId ? 3 : selected.identityStatus === 'verified' ? 2 : selected.owner ? 1 : 0 : 0;
 
   return <main className="page">
     <header className="page-title">
@@ -66,8 +70,9 @@ export function ArrivalQueuePage() {
         run((value) => applyRoomInventoryRefresh(value, { ...meta(), responseVersion: 5, capturedQueueVersion, readyRoomIds: ['ROOM-302'] }), 'Room inventory refreshed without losing visible selection.');
       }}>Refresh room inventory</button>
     </section>
-    {message && <p ref={feedback} tabIndex={-1} role="status">{message}</p>}
-    <section className="suite-table-wrap" aria-label="Arrival results">
+    {message && <p ref={feedback} tabIndex={-1} role={feedbackTone === 'error' ? 'alert' : 'status'} className={`workflow-feedback ${feedbackTone}`}>{message}</p>}
+    <div className="workflow-master-detail">
+    <section className="suite-table-wrap workflow-queue" aria-label="Arrival results">
       <table>
         <caption>{visibleArrivals(state).length} visible arrivals · {state.selectedIds.length} selected</caption>
         <thead><tr><th>Select</th><th>Guest</th><th>Arrival</th><th>Status</th><th>Room</th></tr></thead>
@@ -82,12 +87,14 @@ export function ArrivalQueuePage() {
         </tr>)}</tbody>
       </table>
     </section>
-    <section className="card" aria-label="Selected arrival actions">
+    <aside className="card workflow-detail" aria-label="Selected arrival actions">
       <h2>{selected ? `${selected.id} · ${selected.status}` : 'Select one arrival'}</h2>
       {selected && <>
         <p>Owner {selected.owner ?? 'unclaimed'} · identity {selected.identityStatus} · room {selected.roomId ?? 'unassigned'}</p>
         <p>Requested {selected.roomType} · inventory feed {state.inventoryFeedVersion}</p>
       </>}
+      <ol className="workflow-steps" aria-label="Arrival stages">{['Claim arrival', 'Verify identity', 'Assign room', 'Check in'].map((label, index) => <li key={label} data-complete={stage > index} aria-current={stage === index ? 'step' : undefined}>{label}</li>)}</ol>
+      <div className="workflow-actions">
       <button disabled={role !== 'Front Desk' || !selected || Boolean(selected.owner)} onClick={() => {
         if (selected) run((value) => claimSelectedArrival(value, { ...meta(), expectedReservationVersion: selected.version }), 'Arrival ownership claimed.');
       }}>Claim selected arrival</button>
@@ -100,10 +107,13 @@ export function ArrivalQueuePage() {
       <button disabled={role !== 'Front Desk' || !selected?.roomId || selected.status !== 'expected'} onClick={() => {
         run((value) => checkInSelectedArrival(value, meta()), 'Selected arrival checked in.');
       }}>Check in selected arrival</button>
-    </section>
-    <section className="card" aria-label="Arrival history">
-      <h2>Immutable arrival activity</h2>
+      </div>
+    </aside>
+    </div>
+    <section className="card workflow-history" aria-label="Arrival history">
+      <details><summary>Arrival history · {state.events.length} events</summary>
       {state.events.map((event) => <p key={event.id}>{event.action}{event.reservationId ? ` · ${event.reservationId}` : ''}</p>)}
+      </details>
     </section>
   </main>;
 }
