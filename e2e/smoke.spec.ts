@@ -42,7 +42,7 @@ test('failed room inspection requeues cleaning and preserves evidence after reco
 });
 
 test('front desk extends an in-house stay and recalculates only added nights',async({page})=>{
- await page.goto('/operations');const dialog=page.getByRole('dialog');const save=async()=>{await dialog.getByRole('button',{name:'Save command',exact:true}).click();await expect(dialog).toHaveCount(0);};
+ await page.clock.setFixedTime(new Date('2026-09-12T10:00:00Z'));await page.goto('/operations');const dialog=page.getByRole('dialog');const save=async()=>{await dialog.getByRole('button',{name:'Save command',exact:true}).click();await expect(dialog).toHaveCount(0);};
  await page.getByRole('combobox',{name:'Current actor'}).selectOption('actor-1');
  await page.getByRole('button',{name:/^Guest reservations/}).click();await page.getByRole('button',{name:'Check in guest',exact:true}).click();await save();
  await page.getByRole('button',{name:'Extend in-house stay',exact:true}).click();await dialog.getByLabel('New departure',{exact:true}).fill('2026-09-17');
@@ -55,6 +55,7 @@ test('front desk extends an in-house stay and recalculates only added nights',as
 
 
 test('approved guest credit changes settlement and enables checkout', async ({ page }) => {
+    await page.clock.setFixedTime(new Date('2026-09-12T10:00:00Z'));
     await page.goto('/operations');
     const actor = page.getByRole('combobox', { name: 'Current actor' });const dialog = page.getByRole('dialog');
     const save = async () => { await dialog.getByRole('button', { name: 'Save command', exact: true }).click();await expect(dialog).toHaveCount(0); };
@@ -105,3 +106,5 @@ test('extends two late departures while protecting next-arrival turnover',async(
 test('StayPilot shell supports keyboard bypass and responsive navigation',async({page})=>{await page.setViewportSize({width:640,height:800});await page.goto('/');const skip=page.getByRole('link',{name:'Skip to main content'});await skip.focus();await expect(skip).toBeFocused();await skip.press('Enter');await expect(page.locator('#main-content')).toBeFocused();await page.getByRole('link',{name:'Operations',exact:true}).click();await expect(page).toHaveURL(/\/operations$/);await expect(page.getByRole('navigation',{name:'Product navigation'})).toBeVisible();});
 
 test('StayPilot second-pass workflow uses staged master detail disclosure',async({page})=>{await page.setViewportSize({width:820,height:900});await page.goto('/arrival-queue');await expect(page.getByRole('region',{name:'Arrival results'})).toBeVisible();await expect(page.getByRole('complementary',{name:'Selected arrival actions'})).toBeVisible();await expect(page.getByRole('list',{name:'Arrival stages'})).toBeVisible();const history=page.getByRole('region',{name:'Arrival history'});const disclosure=history.locator('details');await expect(disclosure).not.toHaveAttribute('open','');await history.getByText(/history/i).click();await expect(disclosure).toHaveAttribute('open','');});
+
+test('reverses a returned corporate payment and accepts its replacement exactly once',async({page})=>{await page.goto('/group-billing');const role=page.getByLabel('Group billing role');await page.getByRole('button',{name:'Prepare master invoice'}).click();await role.selectOption('Front Desk');await page.getByRole('button',{name:'Transfer group folios'}).click();await role.selectOption('Finance');await page.getByRole('button',{name:'Issue master invoice'}).click();await role.selectOption('Corporate Payer');await page.getByRole('button',{name:'Record partial corporate payment'}).click();await role.selectOption('Finance');await page.getByRole('button',{name:'Reverse returned payment'}).click();await expect(page.getByText(/Invoice issued · total 195000 · balance 195000/)).toBeVisible();await expect(page.getByText(/immutable receipts 1 · reversals 1/)).toBeVisible();await role.selectOption('Corporate Payer');await page.getByRole('button',{name:'Record replacement payment'}).click();await page.getByRole('button',{name:'Pay corporate balance'}).click();await role.selectOption('Finance');await page.getByRole('button',{name:'Settle group account'}).click();await role.selectOption('Night Auditor');await page.getByRole('button',{name:'Close master invoice'}).click();await page.reload();await expect(page.getByText(/Invoice closed · total 195000 · balance 0/)).toBeVisible();await expect(page.getByText(/immutable receipts 3 · reversals 1/)).toBeVisible();await expect(page.getByRole('region',{name:'Group billing history'})).toContainText('corporate-payment-reversed');});
