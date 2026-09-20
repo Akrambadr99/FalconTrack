@@ -1,0 +1,9 @@
+import { describe, expect, it } from 'vitest'
+import { escalateArrivalIntervention, initialArrivalPortfolioState } from './ArrivalUrgencyControl'
+
+const command = { id: 'arrival-1', expectedRevision: 0, role: 'Duty Manager' as const, reservationId: 'RES-5812', manager: 'Duty manager north', frontDeskOwner: 'Arrival lead', housekeepingOwner: 'Rooms recovery team', replacementRoom: 'ROOM-824', folioAction: 'Priority deposit clearance', asOf: '2026-10-20T14:00:00Z', reason: 'Guest arrival is within one hour with room and folio blockers.' }
+describe('arrival intervention escalation', () => {
+  it('approves replacement inventory and transfers both team responsibilities', () => { const next = escalateArrivalIntervention(initialArrivalPortfolioState, command); const arrival = next.arrivals.find((item) => item.reservationId === command.reservationId); expect(arrival).toMatchObject({ replacementAvailable: true, operationalOwner: 'Duty manager north', frontDeskOwner: 'Arrival lead', housekeepingOwner: 'Rooms recovery team' }); expect(next.interventions[0]).toMatchObject({ guestName: 'Nora Hassan', replacementRoom: 'ROOM-824', status: 'manager-escalated' }) })
+  it('rejects agent and stale escalation attempts without inventory mutation', () => { expect(() => escalateArrivalIntervention(initialArrivalPortfolioState, { ...command, role: 'Front Desk Agent' })).toThrow('duty manager'); expect(() => escalateArrivalIntervention(initialArrivalPortfolioState, { ...command, expectedRevision: 3 })).toThrow('changed'); expect(initialArrivalPortfolioState.arrivals[0]?.replacementAvailable).toBe(false) })
+  it('keeps a retried manager escalation idempotent', () => { const next = escalateArrivalIntervention(initialArrivalPortfolioState, command); expect(escalateArrivalIntervention(next, command)).toBe(next) })
+})

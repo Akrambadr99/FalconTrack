@@ -117,3 +117,6 @@ test('late arriving guest restores the reservation before folio posting',async({
 
 
 test('prioritizes upcoming arrival intervention urgency',async({page})=>{await page.goto('/no-show-control');const workload=page.getByRole('region',{name:'Arrival urgency workload'});await expect(workload).toContainText('RES-5812 · Nora Hassan · critical · 60 minutes');await expect(workload).toContainText('Clear folio before arrival');});
+
+
+test('duty manager approves replacement inventory and coordinates arrival owners',async({page})=>{await page.goto('/no-show-control');await page.getByLabel('Arrival control role').selectOption('Duty Manager');await page.getByRole('button',{name:'Approve replacement and escalate arrival'}).click();await expect(page.getByRole('status')).toContainText('Replacement room approved');await expect(page.getByRole('region',{name:'Arrival urgency workload'})).toContainText('front desk Arrival lead · housekeeping Rooms recovery team');await page.reload();await expect(page.getByRole('list',{name:'Arrival escalation history'})).toContainText('room ROOM-824');});
