@@ -78,6 +78,22 @@ export function queryArrivalReleaseLineage(state: ArrivalPortfolioState, reserva
   return state.releases.filter((item) => item.reservationId === reservationId).map((item) => ({ releaseId: item.id, interventionId: item.interventionId, releasedOn: item.releasedOn, reconciliation: structuredClone(item.reconciliation) }))
 }
 
+export function explainArrivalReadiness(state: ArrivalPortfolioState, reservationId: string) {
+  const arrival = state.arrivals.find((item) => item.reservationId === reservationId)
+  if (!arrival) return null
+  const intervention = [...state.interventions].reverse().find((item) => item.reservationId === reservationId) ?? null
+  const release = [...state.releases].reverse().find((item) => item.reservationId === reservationId) ?? null
+  return {
+    reservation: { ready: true, guestName: arrival.guestName },
+    room: { ready: arrival.roomStatus === 'ready' || Boolean(intervention?.replacementRoom), currentStatus: arrival.roomStatus, replacementRoom: intervention?.replacementRoom ?? null },
+    housekeeping: { ready: Boolean(release?.reconciliation.housekeeping.ready), owner: arrival.housekeepingOwner, acknowledgement: release?.housekeepingAcknowledgement ?? null },
+    financial: { ready: !arrival.folioBlocker, blocker: arrival.folioBlocker, clearanceReference: release?.folioClearanceReference ?? null },
+    occupancy: { conflict: !release, reference: release?.occupancyReference ?? null },
+    interventionState: intervention?.status ?? 'not-started',
+    releaseEligible: Boolean(release),
+  }
+}
+
 export interface ArrivalPersistence { load(): ArrivalPortfolioState | null; save(state: ArrivalPortfolioState): void }
 export class BrowserArrivalPersistence implements ArrivalPersistence {
   static key = 'staypilot:arrival-urgency-control:v3'
