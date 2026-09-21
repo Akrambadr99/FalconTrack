@@ -18,6 +18,7 @@ export function ArrivalUrgencyControl() {
   const [state, setState] = useState(() => repository.read());
   const [role, setRole] = useState<ArrivalControlRole>("Front Desk Agent");
   const [message, setMessage] = useState("");
+  const [replacementRoom, setReplacementRoom] = useState("ROOM-826");
   const feedback = useRef<HTMLParagraphElement>(null);
   const workload = arrivalUrgencyWorkload(
     state.arrivals,
@@ -52,7 +53,8 @@ export function ArrivalUrgencyControl() {
     }
     queueMicrotask(() => feedback.current?.focus());
   };
-  const recordEvidence = () => { const kinds: ArrivalEvidenceKind[] = ["reservation-check", "folio-clearance", "room-inspection", "occupancy-check", "manager-review"]; const kind = kinds[state.evidence.length]; if (!kind) return; try { setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, role, reservationId: "RES-5812", kind, actor: role, evidenceReference: `ARRIVAL-${kind}`, recordedOn: "2026-10-20T14:30:00Z" })); setMessage(`${kind} recorded independently.`); } catch (error) { setMessage(error instanceof Error ? error.message : "Arrival evidence failed."); } queueMicrotask(() => feedback.current?.focus()); };
+  const recordEvidence = () => { const kind: ArrivalEvidenceKind | undefined = readiness?.missingEvidence[0]; if (!kind) return; try { setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, role, reservationId: "RES-5812", kind, actor: role, evidenceReference: `ARRIVAL-${kind}-${String(state.revision)}`, recordedOn: "2026-10-20T14:30:00Z" })); setMessage(`${kind} recorded independently.`); } catch (error) { setMessage(error instanceof Error ? error.message : "Arrival evidence failed."); } queueMicrotask(() => feedback.current?.focus()); };
+  const reviseRoom = () => { try { setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, role, reservationId: "RES-5812", replacementRoom, changedOn: "2026-10-20T14:35:00Z", reason: "Prior replacement room became unavailable before release.", roomRevision: true })); setMessage("Replacement room changed. Each affected team must resubmit evidence."); } catch (error) { setMessage(error instanceof Error ? error.message : "Room revision failed."); } queueMicrotask(() => feedback.current?.focus()); };
   const release = () => {
     try {
       setState(
@@ -63,7 +65,7 @@ export function ArrivalUrgencyControl() {
           reservationId: "RES-5812",
           frontDeskAcknowledgement: "FD-ACK-5812",
           housekeepingAcknowledgement: "HK-ACK-5812",
-          replacementRoom: "ROOM-824",
+          replacementRoom: state.interventions.at(-1)?.replacementRoom ?? "ROOM-824",
           originalRoomDisposition: "ROOM-512 transferred to maintenance",
           folioClearanceReference: "FOLIO-CLEAR-5812",
           occupancyReference: "OCC-824-5812",
@@ -126,7 +128,9 @@ export function ArrivalUrgencyControl() {
       >
         Approve replacement and escalate arrival
       </button>
-      <button disabled={state.interventions.length === 0 || state.evidence.length >= 5 || (state.evidence.length === 2 && role !== "Housekeeping Coordinator") || (state.evidence.length === 4 && role !== "Duty Manager") || (![2, 4].includes(state.evidence.length) && role !== "Front Desk Agent")} onClick={recordEvidence}>Record next team evidence</button>
+      <label>New replacement room <input value={replacementRoom} onChange={(event) => { setReplacementRoom(event.target.value); }} /></label>
+      <button disabled={role !== "Duty Manager" || state.interventions.length === 0 || state.releases.length > 0} onClick={reviseRoom}>Revise replacement room</button>
+      <button disabled={state.interventions.length === 0 || !readiness?.missingEvidence.length || (readiness.missingEvidence[0] === "room-inspection" && role !== "Housekeeping Coordinator") || (readiness.missingEvidence[0] === "manager-review" && role !== "Duty Manager") || (!["room-inspection", "manager-review"].includes(readiness.missingEvidence[0] ?? "") && role !== "Front Desk Agent")} onClick={recordEvidence}>Record next team evidence</button>
       <button
         disabled={
           role !== "Duty Manager" ||
@@ -152,6 +156,7 @@ export function ArrivalUrgencyControl() {
         ))}
       </ol>
       <ol aria-label="Independent arrival evidence">{state.evidence.map((item) => <li key={item.id}>{item.kind} · {item.team} · {item.actor} · {item.evidenceReference} · revision {item.sourceRevision}</li>)}</ol>
+      <ol aria-label="Invalidated arrival evidence">{state.invalidations.map((item) => <li key={item.id}>{item.kind} · {item.team} must resubmit · original {item.actor} revision {item.sourceRevision} · {item.change} · {item.invalidatedOn}</li>)}</ol>
       <ol aria-label="Arrival release history">
         {state.releases.map((item) => (
           <li key={item.id}>
