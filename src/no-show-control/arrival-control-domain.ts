@@ -1,6 +1,8 @@
 import { arrivalUrgencyWorkload, seededUpcomingArrivals, type UpcomingArrivalRecord } from './arrival-urgency'
 
 export type ArrivalControlRole = 'Front Desk Agent' | 'Duty Manager'
+export type ArrivalControlErrorCode = 'STALE_REVISION' | 'UNAUTHORIZED' | 'ARRIVAL_INELIGIBLE' | 'EVIDENCE_INCOMPLETE'
+export class ArrivalControlError extends Error { readonly code: ArrivalControlErrorCode; readonly reservationId: string; constructor(code: ArrivalControlErrorCode, message: string, reservationId: string) { super(message); this.code = code; this.reservationId = reservationId; this.name = 'ArrivalControlError' } }
 export function arrivalCapabilities(role: ArrivalControlRole) {
   return { canApproveReplacement: role === 'Duty Manager', canReleaseArrival: role === 'Duty Manager' } as const
 }
@@ -13,12 +15,12 @@ interface EscalateArrival { id: string; expectedRevision: number; role: ArrivalC
 
 export function escalateArrivalIntervention(state: ArrivalPortfolioState, command: EscalateArrival) {
   if (state.interventions.some((item) => item.id === command.id)) return state
-  if (state.revision !== command.expectedRevision) throw new Error('Arrival workload changed. Refresh before escalation.')
-  if (!arrivalCapabilities(command.role).canApproveReplacement) throw new Error('Only the duty manager can approve replacement inventory and ownership handoff.')
+  if (state.revision !== command.expectedRevision) throw new ArrivalControlError('STALE_REVISION', 'Arrival workload changed. Refresh before escalation.', command.reservationId)
+  if (!arrivalCapabilities(command.role).canApproveReplacement) throw new ArrivalControlError('UNAUTHORIZED', 'Only the duty manager can approve replacement inventory and ownership handoff.', command.reservationId)
   const arrival = state.arrivals.find((item) => item.reservationId === command.reservationId)
   if (!arrival) throw new Error('Upcoming arrival was not found.')
   const urgency = arrivalUrgencyWorkload([arrival], command.asOf)[0]
-  if (urgency?.urgency !== 'critical' || arrival.roomStatus !== 'blocked') throw new Error('Only a critical blocked arrival can be escalated.')
+  if (urgency?.urgency !== 'critical' || arrival.roomStatus !== 'blocked') throw new ArrivalControlError('ARRIVAL_INELIGIBLE', 'Only a critical blocked arrival can be escalated.', command.reservationId)
   if (!command.replacementRoom.trim() || !command.folioAction.trim()) throw new Error('Replacement room and folio intervention are required.')
   if (command.reason.trim().length < 20) throw new Error('Guest-impact escalation reason is required.')
   const next = structuredClone(state)
@@ -36,12 +38,12 @@ export function escalateArrivalIntervention(state: ArrivalPortfolioState, comman
 interface ReleaseArrival { id: string; expectedRevision: number; role: ArrivalControlRole; reservationId: string; frontDeskAcknowledgement: string; housekeepingAcknowledgement: string; replacementRoom: string; originalRoomDisposition: string; folioClearanceReference: string; occupancyReference: string; noShowAuditReference: string; releasedBy: string; releasedOn: string }
 export function releaseOperationalArrival(state: ArrivalPortfolioState, command: ReleaseArrival) {
   if (state.releases.some((item) => item.id === command.id)) return state
-  if (state.revision !== command.expectedRevision) throw new Error('Arrival workload changed. Refresh before operational release.')
-  if (!arrivalCapabilities(command.role).canReleaseArrival) throw new Error('Only the duty manager can authorize final arrival release.')
+  if (state.revision !== command.expectedRevision) throw new ArrivalControlError('STALE_REVISION', 'Arrival workload changed. Refresh before operational release.', command.reservationId)
+  if (!arrivalCapabilities(command.role).canReleaseArrival) throw new ArrivalControlError('UNAUTHORIZED', 'Only the duty manager can authorize final arrival release.', command.reservationId)
   const arrival = state.arrivals.find((item) => item.reservationId === command.reservationId)
   const intervention = [...state.interventions].reverse().find((item) => item.reservationId === command.reservationId)
   if (!arrival || intervention?.status !== 'manager-escalated') throw new Error('An active manager intervention is required.')
-  if (command.replacementRoom !== intervention.replacementRoom || !command.frontDeskAcknowledgement || !command.housekeepingAcknowledgement || !command.originalRoomDisposition || !command.folioClearanceReference || !command.occupancyReference || !command.noShowAuditReference) throw new Error('Room, housekeeping, folio, occupancy, and no-show evidence must be complete.')
+  if (command.replacementRoom !== intervention.replacementRoom || !command.frontDeskAcknowledgement || !command.housekeepingAcknowledgement || !command.originalRoomDisposition || !command.folioClearanceReference || !command.occupancyReference || !command.noShowAuditReference) throw new ArrivalControlError('EVIDENCE_INCOMPLETE', 'Room, housekeeping, folio, occupancy, and no-show evidence must be complete.', command.reservationId)
   const next = structuredClone(state)
   const target = next.arrivals.find((item) => item.reservationId === arrival.reservationId)
   const nextIntervention = next.interventions.find((item) => item.id === intervention.id)
@@ -63,10 +65,17 @@ export function queryArrivalInterventionHistory(state: ArrivalPortfolioState, re
   ]
 }
 
-export class ArrivalPortfolioRepository {
-  static key = 'staypilot:arrival-urgency-control:v2'
+export interface ArrivalPersistence { load(): ArrivalPortfolioState | null; save(state: ArrivalPortfolioState): void }
+export class BrowserArrivalPersistence implements ArrivalPersistence {
+  static key = 'staypilot:arrival-urgency-control:v3'
   private readonly storage: Pick<Storage, 'getItem' | 'setItem'>
   constructor(storage: Pick<Storage, 'getItem' | 'setItem'>) { this.storage = storage }
-  read(): ArrivalPortfolioState { const raw = this.storage.getItem(ArrivalPortfolioRepository.key); return raw ? JSON.parse(raw) as ArrivalPortfolioState : structuredClone(initialArrivalPortfolioState) }
-  dispatch(command: EscalateArrival | ReleaseArrival) { const current = this.read(); const next = 'occupancyReference' in command ? releaseOperationalArrival(current, command) : escalateArrivalIntervention(current, command); if (next !== current) this.storage.setItem(ArrivalPortfolioRepository.key, JSON.stringify(next)); return next }
+  load() { const raw = this.storage.getItem(BrowserArrivalPersistence.key); return raw ? JSON.parse(raw) as ArrivalPortfolioState : null }
+  save(state: ArrivalPortfolioState) { this.storage.setItem(BrowserArrivalPersistence.key, JSON.stringify(state)) }
+}
+export class ArrivalPortfolioRepository {
+  private readonly persistence: ArrivalPersistence
+  constructor(persistence: ArrivalPersistence) { this.persistence = persistence }
+  read(): ArrivalPortfolioState { return this.persistence.load() ?? structuredClone(initialArrivalPortfolioState) }
+  dispatch(command: EscalateArrival | ReleaseArrival) { const current = this.read(); const next = 'occupancyReference' in command ? releaseOperationalArrival(current, command) : escalateArrivalIntervention(current, command); if (next !== current) this.persistence.save(next); return next }
 }
