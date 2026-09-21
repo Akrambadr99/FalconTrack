@@ -9,13 +9,18 @@ export function arrivalCapabilities(role: ArrivalControlRole) {
 export interface CoordinatedArrival extends UpcomingArrivalRecord { frontDeskOwner: string; housekeepingOwner: string }
 export interface ArrivalIntervention { id: string; reservationId: string; guestName: string; previousFrontDeskOwner: string; previousHousekeepingOwner: string; frontDeskOwner: string; housekeepingOwner: string; manager: string; replacementRoom: string; folioAction: string; reason: string; status: 'manager-escalated' | 'completed'; immutable: true }
 export interface ArrivalReconciliationSnapshot { reservation: { reservationId: string; guestName: string; ready: true }; room: { replacementRoom: string; originalRoomDisposition: string; ready: true }; housekeeping: { acknowledgement: string; ready: true }; folio: { clearanceReference: string; blockerCleared: true }; occupancy: { reference: string; conflictFree: true }; noShow: { auditReference: string; reconciled: true } }
-export interface ArrivalRelease { id: string; reservationId: string; interventionId: string; frontDeskAcknowledgement: string; housekeepingAcknowledgement: string; replacementRoom: string; originalRoomDisposition: string; folioClearanceReference: string; occupancyReference: string; noShowAuditReference: string; reconciliation: ArrivalReconciliationSnapshot; releasedBy: string; releasedOn: string; immutable: true }
+export interface ArrivalSourcePins { reservationVersion: number; roomId: string; roomVersion: number; folioVersion: number }
+export interface ArrivalOperationalSources { reservationId: string; reservation: { version: number; assignedRoomId: string | null }; rooms: { id: string; version: number; status: 'ready' | 'blocked'; occupied: boolean }[]; folio: { version: number; blocker: boolean; clearanceReference: string | null } }
+export interface ArrivalRelease { id: string; reservationId: string; interventionId: string; frontDeskAcknowledgement: string; housekeepingAcknowledgement: string; replacementRoom: string; originalRoomDisposition: string; folioClearanceReference: string; occupancyReference: string; noShowAuditReference: string; reconciliation: ArrivalReconciliationSnapshot; sourcePins?: ArrivalSourcePins; releasedBy: string; releasedOn: string; immutable: true }
 export type ArrivalEvidenceKind = 'reservation-check' | 'folio-clearance' | 'room-inspection' | 'occupancy-check' | 'manager-review'
-export interface ArrivalEvidenceRecord { id: string; reservationId: string; interventionId: string; kind: ArrivalEvidenceKind; team: 'front-desk' | 'housekeeping' | 'duty-management'; actor: string; evidenceReference: string; replacementRoom: string; sourceRevision: number; recordedOn: string; immutable: true }
+export interface ArrivalEvidenceRecord { id: string; reservationId: string; interventionId: string; kind: ArrivalEvidenceKind; team: 'front-desk' | 'housekeeping' | 'duty-management'; actor: string; evidenceReference: string; replacementRoom: string; sourceRevision: number; sourcePins?: ArrivalSourcePins; recordedOn: string; immutable: true }
 export interface ArrivalEvidenceInvalidation { id: string; reservationId: string; evidenceId: string; kind: ArrivalEvidenceKind; team: ArrivalEvidenceRecord['team']; actor: string; sourceRevision: number; invalidatedByInterventionId: string; change: string; invalidatedOn: string; replacementRequired: true; immutable: true }
 export interface ArrivalSourceRevision { id: string; reservationId: string; interventionId: string; source: 'folio' | 'housekeeping'; sourceReference: string; reason: string; actor: string; revisedOn: string; invalidatedEvidenceIds: string[]; immutable: true }
-export interface ArrivalPortfolioState { revision: number; arrivals: CoordinatedArrival[]; interventions: ArrivalIntervention[]; evidence: ArrivalEvidenceRecord[]; invalidations: ArrivalEvidenceInvalidation[]; sourceRevisions: ArrivalSourceRevision[]; releases: ArrivalRelease[] }
-export const initialArrivalPortfolioState: ArrivalPortfolioState = { revision: 0, arrivals: seededUpcomingArrivals.map((item) => ({ ...structuredClone(item), frontDeskOwner: item.operationalOwner === 'Front desk' ? item.operationalOwner : 'Front desk west', housekeepingOwner: 'Housekeeping dispatch' })), interventions: [], evidence: [], invalidations: [], sourceRevisions: [], releases: [] }
+export interface ArrivalPortfolioState { revision: number; arrivals: CoordinatedArrival[]; interventions: ArrivalIntervention[]; operationalSources: ArrivalOperationalSources[]; evidence: ArrivalEvidenceRecord[]; invalidations: ArrivalEvidenceInvalidation[]; sourceRevisions: ArrivalSourceRevision[]; releases: ArrivalRelease[] }
+function initialSources(arrivals: UpcomingArrivalRecord[], interventions: ArrivalIntervention[] = []): ArrivalOperationalSources[] { return arrivals.map((arrival) => { const roomId = interventions.filter((item) => item.reservationId === arrival.reservationId).at(-1)?.replacementRoom ?? null; return { reservationId: arrival.reservationId, reservation: { version: 0, assignedRoomId: roomId }, rooms: roomId ? [{ id: roomId, version: 0, status: arrival.roomStatus === 'blocked' && !arrival.replacementAvailable ? 'blocked' as const : 'ready' as const, occupied: false }] : [], folio: { version: 0, blocker: arrival.folioBlocker, clearanceReference: null } } }) }
+export const initialArrivalPortfolioState: ArrivalPortfolioState = { revision: 0, arrivals: seededUpcomingArrivals.map((item) => ({ ...structuredClone(item), frontDeskOwner: item.operationalOwner === 'Front desk' ? item.operationalOwner : 'Front desk west', housekeepingOwner: 'Housekeeping dispatch' })), interventions: [], operationalSources: initialSources(seededUpcomingArrivals), evidence: [], invalidations: [], sourceRevisions: [], releases: [] }
+function sourcePins(source: ArrivalOperationalSources, roomId: string): ArrivalSourcePins { const room = source.rooms.find((item) => item.id === roomId); return { reservationVersion: source.reservation.version, roomId, roomVersion: room?.version ?? -1, folioVersion: source.folio.version } }
+function evidenceMatchesSource(evidence: ArrivalEvidenceRecord, pins: ArrivalSourcePins) { const previous = evidence.sourcePins; if (!previous) return true; if (evidence.kind === 'reservation-check') return previous.reservationVersion === pins.reservationVersion; if (evidence.kind === 'folio-clearance') return previous.folioVersion === pins.folioVersion; if (evidence.kind === 'room-inspection' || evidence.kind === 'occupancy-check') return previous.roomId === pins.roomId && previous.roomVersion === pins.roomVersion; return previous.reservationVersion === pins.reservationVersion && previous.roomId === pins.roomId && previous.roomVersion === pins.roomVersion && previous.folioVersion === pins.folioVersion }
 interface EscalateArrival { id: string; expectedRevision: number; role: ArrivalControlRole; reservationId: string; manager: string; frontDeskOwner: string; housekeepingOwner: string; replacementRoom: string; folioAction: string; asOf: string; reason: string }
 
 export function escalateArrivalIntervention(state: ArrivalPortfolioState, command: EscalateArrival) {
@@ -36,6 +41,11 @@ export function escalateArrivalIntervention(state: ArrivalPortfolioState, comman
   target.housekeepingOwner = command.housekeepingOwner
   target.operationalOwner = command.manager
   target.replacementAvailable = true
+  const source = next.operationalSources.find((item) => item.reservationId === command.reservationId)
+  if (!source) throw new Error('Arrival source records were not found.')
+  source.reservation.assignedRoomId = command.replacementRoom
+  source.reservation.version += 1
+  if (!source.rooms.some((item) => item.id === command.replacementRoom)) source.rooms.push({ id: command.replacementRoom, version: 1, status: 'ready', occupied: false })
   next.revision += 1
   return next
 }
@@ -50,6 +60,11 @@ export function reviseArrivalReplacement(state: ArrivalPortfolioState, command: 
   if (!command.replacementRoom.trim() || command.replacementRoom === previous.replacementRoom || command.reason.trim().length < 20) throw new Error('A different replacement room and a specific reason are required.')
   const next = structuredClone(state)
   next.interventions.push({ ...previous, id: command.id, replacementRoom: command.replacementRoom.trim(), reason: command.reason.trim(), immutable: true })
+  const source = next.operationalSources.find((item) => item.reservationId === command.reservationId)
+  if (!source) throw new Error('Arrival source records were not found.')
+  source.reservation.assignedRoomId = command.replacementRoom.trim()
+  source.reservation.version += 1
+  if (!source.rooms.some((item) => item.id === command.replacementRoom.trim())) source.rooms.push({ id: command.replacementRoom.trim(), version: 1, status: 'ready', occupied: false })
   for (const evidence of state.evidence.filter((item) => item.interventionId === previous.id)) {
     next.invalidations.push({ id: `${command.id}:${evidence.id}`, reservationId: command.reservationId, evidenceId: evidence.id, kind: evidence.kind, team: evidence.team, actor: evidence.actor, sourceRevision: evidence.sourceRevision, invalidatedByInterventionId: command.id, change: `Replacement room ${previous.replacementRoom} changed to ${command.replacementRoom.trim()}: ${command.reason.trim()}`, invalidatedOn: command.changedOn, replacementRequired: true, immutable: true })
   }
@@ -73,8 +88,10 @@ export function reviseArrivalSource(state: ArrivalPortfolioState, command: Revis
   const next = structuredClone(state)
   const arrival = next.arrivals.find((item) => item.reservationId === command.reservationId)
   if (!arrival) throw new Error('Arrival disappeared during source revision.')
-  if (command.source === 'folio') arrival.folioBlocker = true
-  else arrival.roomStatus = 'blocked'
+  const source = next.operationalSources.find((item) => item.reservationId === command.reservationId)
+  if (!source) throw new Error('Arrival source records were not found.')
+  if (command.source === 'folio') { arrival.folioBlocker = true; source.folio.blocker = true; source.folio.clearanceReference = null; source.folio.version += 1 }
+  else { arrival.roomStatus = 'blocked'; const room = source.rooms.find((item) => item.id === intervention.replacementRoom); if (!room) throw new Error('Assigned room source was not found.'); room.status = 'blocked'; room.version += 1 }
   next.sourceRevisions.push({ id: command.id, reservationId: command.reservationId, interventionId: intervention.id, source: command.source, sourceReference: command.sourceReference.trim(), reason: command.reason.trim(), actor: command.actor, revisedOn: command.revisedOn, invalidatedEvidenceIds: affected.map((item) => item.id), immutable: true })
   for (const evidence of affected) next.invalidations.push({ id: `${command.id}:${evidence.id}`, reservationId: command.reservationId, evidenceId: evidence.id, kind: evidence.kind, team: evidence.team, actor: evidence.actor, sourceRevision: evidence.sourceRevision, invalidatedByInterventionId: intervention.id, change: `${command.source} source ${command.sourceReference.trim()}: ${command.reason.trim()}`, invalidatedOn: command.revisedOn, replacementRequired: true, immutable: true })
   next.revision += 1
@@ -91,7 +108,14 @@ export function recordArrivalEvidence(state: ArrivalPortfolioState, command: Rec
   if (command.role !== expectedTeam) throw new ArrivalControlError('UNAUTHORIZED', `Only the ${expectedTeam.toLocaleLowerCase()} can record this evidence.`, command.reservationId)
   if (!command.evidenceReference.trim()) throw new ArrivalControlError('EVIDENCE_INCOMPLETE', 'A durable evidence reference is required.', command.reservationId)
   const next = structuredClone(state)
-  next.evidence.push({ id: command.id, reservationId: command.reservationId, interventionId: intervention.id, kind: command.kind, team: command.role === 'Housekeeping Coordinator' ? 'housekeeping' : command.role === 'Duty Manager' ? 'duty-management' : 'front-desk', actor: command.actor, evidenceReference: command.evidenceReference.trim(), replacementRoom: intervention.replacementRoom, sourceRevision: state.revision, recordedOn: command.recordedOn, immutable: true })
+  const source = next.operationalSources.find((item) => item.reservationId === command.reservationId)
+  const room = source?.rooms.find((item) => item.id === intervention.replacementRoom)
+  if (!source || !room || source.reservation.assignedRoomId !== intervention.replacementRoom) throw new ArrivalControlError('EVIDENCE_INCOMPLETE', 'Current reservation and assigned room source must agree.', command.reservationId)
+  if (command.kind === 'folio-clearance') { source.folio.blocker = false; source.folio.clearanceReference = command.evidenceReference.trim(); source.folio.version += 1 }
+  if (command.kind === 'room-inspection') { room.status = 'ready'; room.version += 1 }
+  if (command.kind === 'occupancy-check' && (room.occupied || room.status !== 'ready')) throw new ArrivalControlError('EVIDENCE_INCOMPLETE', 'Current room source is occupied or blocked.', command.reservationId)
+  if (command.kind === 'manager-review' && (source.folio.blocker || room.status !== 'ready' || room.occupied)) throw new ArrivalControlError('EVIDENCE_INCOMPLETE', 'Current room and folio sources are not ready for manager review.', command.reservationId)
+  next.evidence.push({ id: command.id, reservationId: command.reservationId, interventionId: intervention.id, kind: command.kind, team: command.role === 'Housekeeping Coordinator' ? 'housekeeping' : command.role === 'Duty Manager' ? 'duty-management' : 'front-desk', actor: command.actor, evidenceReference: command.evidenceReference.trim(), replacementRoom: intervention.replacementRoom, sourceRevision: state.revision, sourcePins: sourcePins(source, room.id), recordedOn: command.recordedOn, immutable: true })
   next.revision += 1
   return next
 }
@@ -105,11 +129,16 @@ export function releaseOperationalArrival(state: ArrivalPortfolioState, command:
   const intervention = [...state.interventions].reverse().find((item) => item.reservationId === command.reservationId)
   if (!arrival || intervention?.status !== 'manager-escalated') throw new Error('An active manager intervention is required.')
   if (command.replacementRoom !== intervention.replacementRoom || !command.frontDeskAcknowledgement || !command.housekeepingAcknowledgement || !command.originalRoomDisposition || !command.folioClearanceReference || !command.occupancyReference || !command.noShowAuditReference) throw new ArrivalControlError('EVIDENCE_INCOMPLETE', 'Room, housekeeping, folio, occupancy, and no-show evidence must be complete.', command.reservationId)
+  const source = state.operationalSources.find((item) => item.reservationId === command.reservationId)
+  const room = source?.rooms.find((item) => item.id === command.replacementRoom)
+  if (!source || !room || source.reservation.assignedRoomId !== command.replacementRoom || room.occupied || room.status !== 'ready') throw new ArrivalControlError('EVIDENCE_INCOMPLETE', 'Assigned room is no longer ready and vacant in the operational source.', command.reservationId)
+  const currentPins = sourcePins(source, room.id)
   const governedEvidence = state.evidence.filter((item) => item.reservationId === command.reservationId)
   if (governedEvidence.length > 0 || state.sourceRevisions.some((item) => item.reservationId === command.reservationId)) {
-    const currentEvidence = governedEvidence.filter((item) => item.interventionId === intervention.id && item.replacementRoom === intervention.replacementRoom && !state.invalidations.some((invalidation) => invalidation.evidenceId === item.id))
+    const currentEvidence = governedEvidence.filter((item) => item.interventionId === intervention.id && item.replacementRoom === intervention.replacementRoom && evidenceMatchesSource(item, currentPins) && !state.invalidations.some((invalidation) => invalidation.evidenceId === item.id))
     const missingKinds = (['reservation-check', 'folio-clearance', 'room-inspection', 'occupancy-check', 'manager-review'] as ArrivalEvidenceKind[]).filter((kind) => !currentEvidence.some((item) => item.kind === kind))
     if (missingKinds.length > 0) throw new ArrivalControlError('EVIDENCE_INCOMPLETE', `Independent arrival evidence is missing: ${missingKinds.join(', ')}.`, command.reservationId)
+    if (source.folio.blocker) throw new ArrivalControlError('EVIDENCE_INCOMPLETE', 'Current folio source still blocks arrival release.', command.reservationId)
     if (state.sourceRevisions.some((item) => item.reservationId === command.reservationId && item.source === 'folio') && currentEvidence.filter((item) => item.kind === 'folio-clearance').at(-1)?.evidenceReference !== command.folioClearanceReference) throw new ArrivalControlError('EVIDENCE_INCOMPLETE', 'Release must reference the current independently verified folio clearance.', command.reservationId)
   }
   const next = structuredClone(state)
@@ -124,12 +153,16 @@ export function releaseOperationalArrival(state: ArrivalPortfolioState, command:
     occupancy: { reference: command.occupancyReference, conflictFree: true },
     noShow: { auditReference: command.noShowAuditReference, reconciled: true },
   }
-  next.releases.push({ ...command, interventionId: intervention.id, reconciliation, immutable: true })
+  next.releases.push({ ...command, interventionId: intervention.id, reconciliation, sourcePins: currentPins, immutable: true })
   target.roomStatus = 'ready'
   target.folioBlocker = false
   target.operationalOwner = 'Front desk'
   target.interventionOpenedAt = null
   nextIntervention.status = 'completed'
+  const nextSource = next.operationalSources.find((item) => item.reservationId === command.reservationId)
+  if (nextSource && governedEvidence.length === 0) { nextSource.folio.blocker = false; nextSource.folio.clearanceReference = command.folioClearanceReference; nextSource.folio.version += 1 }
+  const nextRoom = nextSource?.rooms.find((item) => item.id === command.replacementRoom)
+  if (nextRoom) { nextRoom.occupied = true; nextRoom.version += 1 }
   next.revision += 1
   return next
 }
@@ -150,14 +183,18 @@ export function explainArrivalReadiness(state: ArrivalPortfolioState, reservatio
   if (!arrival) return null
   const intervention = [...state.interventions].reverse().find((item) => item.reservationId === reservationId) ?? null
   const release = [...state.releases].reverse().find((item) => item.reservationId === reservationId) ?? null
-  const validEvidence = intervention ? state.evidence.filter((item) => item.reservationId === reservationId && item.interventionId === intervention.id && item.replacementRoom === intervention.replacementRoom && !state.invalidations.some((invalidation) => invalidation.evidenceId === item.id)) : []
+  const source = state.operationalSources.find((item) => item.reservationId === reservationId)
+  const room = source?.rooms.find((item) => item.id === intervention?.replacementRoom)
+  const pins = source && intervention ? sourcePins(source, intervention.replacementRoom) : null
+  const validEvidence = intervention ? state.evidence.filter((item) => item.reservationId === reservationId && item.interventionId === intervention.id && item.replacementRoom === intervention.replacementRoom && (!pins || evidenceMatchesSource(item, pins)) && !state.invalidations.some((invalidation) => invalidation.evidenceId === item.id)) : []
   const requiredKinds: ArrivalEvidenceKind[] = ['reservation-check', 'folio-clearance', 'room-inspection', 'occupancy-check', 'manager-review']
   const missingEvidence = requiredKinds.filter((kind) => !validEvidence.some((item) => item.kind === kind))
   return {
     reservation: { ready: true, guestName: arrival.guestName },
-    room: { ready: arrival.roomStatus === 'ready' || Boolean(intervention?.replacementRoom), currentStatus: arrival.roomStatus, replacementRoom: intervention?.replacementRoom ?? null },
+    room: { ready: release ? true : room?.status === 'ready' && !room.occupied, currentStatus: room?.status ?? arrival.roomStatus, replacementRoom: intervention?.replacementRoom ?? null },
     housekeeping: { ready: Boolean(release?.reconciliation.housekeeping.ready), owner: arrival.housekeepingOwner, acknowledgement: release?.housekeepingAcknowledgement ?? null },
-    financial: { ready: !arrival.folioBlocker, blocker: arrival.folioBlocker, clearanceReference: release?.folioClearanceReference ?? null },
+    financial: { ready: !(source?.folio.blocker ?? arrival.folioBlocker), blocker: source?.folio.blocker ?? arrival.folioBlocker, clearanceReference: source?.folio.clearanceReference ?? release?.folioClearanceReference ?? null },
+    sourcePins: pins,
     occupancy: { conflict: !release, reference: release?.occupancyReference ?? null },
     interventionState: intervention?.status ?? 'not-started',
     releaseEligible: Boolean(release),
@@ -177,7 +214,7 @@ export class BrowserArrivalPersistence implements ArrivalPersistence {
     const raw = this.storage.getItem(BrowserArrivalPersistence.key)
     if (!raw) return null
     type SavedRelease = Omit<ArrivalRelease, 'reconciliation'> & { reconciliation?: ArrivalReconciliationSnapshot }
-    const saved = JSON.parse(raw) as Omit<ArrivalPortfolioState, 'releases' | 'evidence' | 'invalidations' | 'sourceRevisions'> & { evidence?: ArrivalEvidenceRecord[]; invalidations?: ArrivalEvidenceInvalidation[]; sourceRevisions?: ArrivalSourceRevision[]; releases?: SavedRelease[] }
+    const saved = JSON.parse(raw) as Omit<ArrivalPortfolioState, 'releases' | 'evidence' | 'invalidations' | 'sourceRevisions' | 'operationalSources'> & { evidence?: ArrivalEvidenceRecord[]; invalidations?: ArrivalEvidenceInvalidation[]; sourceRevisions?: ArrivalSourceRevision[]; operationalSources?: ArrivalOperationalSources[]; releases?: SavedRelease[] }
     const releases = (saved.releases ?? []).map((release): ArrivalRelease => {
       if (release.reconciliation) return { ...release, reconciliation: release.reconciliation }
       const guestName = saved.arrivals.find((arrival) => arrival.reservationId === release.reservationId)?.guestName ?? 'Unknown guest'
@@ -193,7 +230,7 @@ export class BrowserArrivalPersistence implements ArrivalPersistence {
         },
       }
     })
-    return { ...saved, evidence: saved.evidence ?? [], invalidations: saved.invalidations ?? [], sourceRevisions: saved.sourceRevisions ?? [], releases }
+    return { ...saved, operationalSources: saved.operationalSources ?? initialSources(saved.arrivals, saved.interventions), evidence: saved.evidence ?? [], invalidations: saved.invalidations ?? [], sourceRevisions: saved.sourceRevisions ?? [], releases }
   }
   save(state: ArrivalPortfolioState) { this.storage.setItem(BrowserArrivalPersistence.key, JSON.stringify(state)) }
 }

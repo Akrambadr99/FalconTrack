@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ArrivalControlError, ArrivalPortfolioRepository, arrivalCapabilities, escalateArrivalIntervention, explainArrivalReadiness, initialArrivalPortfolioState, queryArrivalInterventionHistory, queryArrivalReleaseLineage, recordArrivalEvidence, releaseOperationalArrival, reviseArrivalReplacement, reviseArrivalSource, type ArrivalEvidenceKind, type ArrivalPersistence, type ArrivalPortfolioState } from './arrival-control-domain'
+import { ArrivalControlError, ArrivalPortfolioRepository, BrowserArrivalPersistence, arrivalCapabilities, escalateArrivalIntervention, explainArrivalReadiness, initialArrivalPortfolioState, queryArrivalInterventionHistory, queryArrivalReleaseLineage, recordArrivalEvidence, releaseOperationalArrival, reviseArrivalReplacement, reviseArrivalSource, type ArrivalEvidenceKind, type ArrivalPersistence, type ArrivalPortfolioState } from './arrival-control-domain'
 
 const command = { id: 'arrival-1', expectedRevision: 0, role: 'Duty Manager' as const, reservationId: 'RES-5812', manager: 'Duty manager north', frontDeskOwner: 'Arrival lead', housekeepingOwner: 'Rooms recovery team', replacementRoom: 'ROOM-824', folioAction: 'Priority deposit clearance', asOf: '2026-10-20T14:00:00Z', reason: 'Guest arrival is within one hour with room and folio blockers.' }
 describe('arrival intervention escalation', () => {
@@ -46,4 +46,34 @@ describe('operational arrival release', () => {
   it('centralizes arrival authority and queries cross-team handoff evidence', () => { expect(arrivalCapabilities('Front Desk Agent')).toEqual({ canApproveReplacement: false, canReleaseArrival: false }); const active = escalateArrivalIntervention(initialArrivalPortfolioState, command); const closed = releaseOperationalArrival(active, release); const history = queryArrivalInterventionHistory(closed, 'RES-5812'); expect(history.map((item) => item.kind)).toEqual(['manager-intervention', 'operational-release']); expect(history[1]?.evidence).toContain('OCC-824') })
   it('explains room, housekeeping, financial, occupancy, and intervention readiness', () => { const active = escalateArrivalIntervention(initialArrivalPortfolioState, command); expect(explainArrivalReadiness(active, 'RES-5812')).toMatchObject({ reservation: { ready: true }, room: { ready: true, replacementRoom: 'ROOM-824' }, housekeeping: { ready: false, owner: 'Rooms recovery team' }, financial: { ready: false, blocker: true }, occupancy: { conflict: true }, interventionState: 'manager-escalated', releaseEligible: false }); const closed = releaseOperationalArrival(active, release); expect(explainArrivalReadiness(closed, 'RES-5812')).toMatchObject({ housekeeping: { ready: true, acknowledgement: 'HK-5812' }, financial: { ready: true, clearanceReference: 'FOLIO-5812' }, occupancy: { conflict: false, reference: 'OCC-824' }, interventionState: 'completed', releaseEligible: true }) })
   it('does not persist a partial room or folio release when evidence validation fails', () => { class MemoryPersistence implements ArrivalPersistence { state: ArrivalPortfolioState | null = null; writes = 0; load() { return this.state }; save(state: ArrivalPortfolioState) { this.state = structuredClone(state); this.writes += 1 } }; const persistence = new MemoryPersistence(); const repository = new ArrivalPortfolioRepository(persistence); repository.dispatch(command); expect(() => repository.dispatch({ ...release, replacementRoom: 'ROOM-999' })).toThrow(ArrivalControlError); expect(persistence.writes).toBe(1); expect(persistence.state?.arrivals.find((item) => item.reservationId === 'RES-5812')).toMatchObject({ roomStatus: 'blocked', folioBlocker: true }); repository.dispatch(release); expect(persistence.writes).toBe(2) })
+})
+
+describe('arrival operational source lineage', () => {
+  const release = { id: 'source-pinned-release', role: 'Duty Manager' as const, reservationId: 'RES-5812', frontDeskAcknowledgement: 'FD-5812', housekeepingAcknowledgement: 'HK-5812', replacementRoom: 'ROOM-824', originalRoomDisposition: 'ROOM-512 to maintenance', folioClearanceReference: 'FOLIO-5812', occupancyReference: 'OCC-824', noShowAuditReference: 'NOSHOW-5812', releasedBy: 'manager', releasedOn: '2026-10-20T14:45:00Z' }
+  it('pins the assigned reservation, room, and folio revisions in the durable release', () => {
+    const active = escalateArrivalIntervention(initialArrivalPortfolioState, command)
+    const closed = releaseOperationalArrival(active, { ...release, expectedRevision: active.revision })
+    expect(closed.releases[0]?.sourcePins).toEqual({ reservationVersion: 1, roomId: 'ROOM-824', roomVersion: 1, folioVersion: 0 })
+    expect(closed.operationalSources.find((item) => item.reservationId === 'RES-5812')).toMatchObject({ reservation: { assignedRoomId: 'ROOM-824' }, folio: { blocker: false, clearanceReference: 'FOLIO-5812' }, rooms: [{ id: 'ROOM-824', occupied: true }] })
+  })
+  it('rejects changed room inventory without mutating the intervention or release', () => {
+    const active = escalateArrivalIntervention(initialArrivalPortfolioState, command)
+    const changed = structuredClone(active)
+    const room = changed.operationalSources.find((item) => item.reservationId === 'RES-5812')?.rooms[0]
+    if (!room) throw new Error('Expected seeded replacement room')
+    room.occupied = true
+    room.version += 1
+    expect(explainArrivalReadiness(changed, 'RES-5812')?.room.ready).toBe(false)
+    expect(() => releaseOperationalArrival(changed, { ...release, expectedRevision: changed.revision })).toThrow('no longer ready and vacant')
+    expect(changed.releases).toHaveLength(0)
+    expect(changed.interventions[0]?.status).toBe('manager-escalated')
+  })
+  it('migrates older arrival snapshots into the feature-local operational source records', () => {
+    const legacy = structuredClone(initialArrivalPortfolioState)
+    const store = new Map<string, string>()
+    delete (legacy as Partial<ArrivalPortfolioState>).operationalSources
+    store.set(BrowserArrivalPersistence.key, JSON.stringify(legacy))
+    const persistence = new BrowserArrivalPersistence({ getItem: (key) => store.get(key) ?? null, setItem: (key, value) => { store.set(key, value) } })
+    expect(persistence.load()?.operationalSources).toHaveLength(initialArrivalPortfolioState.arrivals.length)
+  })
 })

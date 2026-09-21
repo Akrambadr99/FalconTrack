@@ -125,6 +125,7 @@ export function ArrivalUrgencyControl() {
           intervention {readiness.interventionState} · {readiness.missingEvidence.length > 0 ? `missing ${readiness.missingEvidence.join(", ")}` : "independently verified"}
         </p>
       )}
+      {readiness?.sourcePins && <p aria-label="Arrival operational source versions">Reservation version {readiness.sourcePins.reservationVersion} · assigned room {readiness.sourcePins.roomId} version {readiness.sourcePins.roomVersion} · folio version {readiness.sourcePins.folioVersion}</p>}
       <button
         disabled={role !== "Duty Manager" || state.interventions.length > 0}
         onClick={escalate}
@@ -159,7 +160,7 @@ export function ArrivalUrgencyControl() {
           </li>
         ))}
       </ol>
-      <ol aria-label="Independent arrival evidence">{state.evidence.map((item) => <li key={item.id}>{item.kind} · {item.team} · {item.actor} · {item.evidenceReference} · revision {item.sourceRevision}</li>)}</ol>
+      <ol aria-label="Independent arrival evidence">{state.evidence.map((item) => <li key={item.id}>{item.kind} · {item.team} · {item.actor} · {item.evidenceReference} · revision {item.sourceRevision}{item.sourcePins ? ` · room ${item.sourcePins.roomId} v${String(item.sourcePins.roomVersion)} · folio v${String(item.sourcePins.folioVersion)}` : ''}</li>)}</ol>
       <ol aria-label="Invalidated arrival evidence">{state.invalidations.map((item) => <li key={item.id}>{item.kind} · {item.team} must resubmit · original {item.actor} revision {item.sourceRevision} · {item.change} · {item.invalidatedOn}</li>)}</ol>
       <ol aria-label="Arrival source revision history">{state.sourceRevisions.map((item) => <li key={item.id}>{item.source} · {item.sourceReference} · {item.reason} · invalidated {item.invalidatedEvidenceIds.length} prior verifications</li>)}</ol>
       <ol aria-label="Arrival release history">
@@ -168,7 +169,7 @@ export function ArrivalUrgencyControl() {
             {item.reservationId} · room{" "}
             {item.reconciliation.room.replacementRoom} · occupancy{" "}
             {item.reconciliation.occupancy.reference} · folio cleared ·
-            reconciled · released {item.releasedOn}
+            reconciled · released {item.releasedOn}{item.sourcePins ? ` · reservation v${String(item.sourcePins.reservationVersion)} · room v${String(item.sourcePins.roomVersion)} · folio v${String(item.sourcePins.folioVersion)}` : ''}
           </li>
         ))}
       </ol>
