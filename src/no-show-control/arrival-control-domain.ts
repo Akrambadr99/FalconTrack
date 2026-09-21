@@ -13,8 +13,9 @@ export interface ArrivalRelease { id: string; reservationId: string; interventio
 export type ArrivalEvidenceKind = 'reservation-check' | 'folio-clearance' | 'room-inspection' | 'occupancy-check' | 'manager-review'
 export interface ArrivalEvidenceRecord { id: string; reservationId: string; interventionId: string; kind: ArrivalEvidenceKind; team: 'front-desk' | 'housekeeping' | 'duty-management'; actor: string; evidenceReference: string; replacementRoom: string; sourceRevision: number; recordedOn: string; immutable: true }
 export interface ArrivalEvidenceInvalidation { id: string; reservationId: string; evidenceId: string; kind: ArrivalEvidenceKind; team: ArrivalEvidenceRecord['team']; actor: string; sourceRevision: number; invalidatedByInterventionId: string; change: string; invalidatedOn: string; replacementRequired: true; immutable: true }
-export interface ArrivalPortfolioState { revision: number; arrivals: CoordinatedArrival[]; interventions: ArrivalIntervention[]; evidence: ArrivalEvidenceRecord[]; invalidations: ArrivalEvidenceInvalidation[]; releases: ArrivalRelease[] }
-export const initialArrivalPortfolioState: ArrivalPortfolioState = { revision: 0, arrivals: seededUpcomingArrivals.map((item) => ({ ...structuredClone(item), frontDeskOwner: item.operationalOwner === 'Front desk' ? item.operationalOwner : 'Front desk west', housekeepingOwner: 'Housekeeping dispatch' })), interventions: [], evidence: [], invalidations: [], releases: [] }
+export interface ArrivalSourceRevision { id: string; reservationId: string; interventionId: string; source: 'folio' | 'housekeeping'; sourceReference: string; reason: string; actor: string; revisedOn: string; invalidatedEvidenceIds: string[]; immutable: true }
+export interface ArrivalPortfolioState { revision: number; arrivals: CoordinatedArrival[]; interventions: ArrivalIntervention[]; evidence: ArrivalEvidenceRecord[]; invalidations: ArrivalEvidenceInvalidation[]; sourceRevisions: ArrivalSourceRevision[]; releases: ArrivalRelease[] }
+export const initialArrivalPortfolioState: ArrivalPortfolioState = { revision: 0, arrivals: seededUpcomingArrivals.map((item) => ({ ...structuredClone(item), frontDeskOwner: item.operationalOwner === 'Front desk' ? item.operationalOwner : 'Front desk west', housekeepingOwner: 'Housekeeping dispatch' })), interventions: [], evidence: [], invalidations: [], sourceRevisions: [], releases: [] }
 interface EscalateArrival { id: string; expectedRevision: number; role: ArrivalControlRole; reservationId: string; manager: string; frontDeskOwner: string; housekeepingOwner: string; replacementRoom: string; folioAction: string; asOf: string; reason: string }
 
 export function escalateArrivalIntervention(state: ArrivalPortfolioState, command: EscalateArrival) {
@@ -56,6 +57,30 @@ export function reviseArrivalReplacement(state: ArrivalPortfolioState, command: 
   return next
 }
 
+interface ReviseArrivalSource { id: string; expectedRevision: number; role: ArrivalControlRole; reservationId: string; source: ArrivalSourceRevision['source']; sourceReference: string; reason: string; actor: string; revisedOn: string }
+export function reviseArrivalSource(state: ArrivalPortfolioState, command: ReviseArrivalSource) {
+  if (state.sourceRevisions.some((item) => item.id === command.id)) return state
+  if (state.revision !== command.expectedRevision) throw new ArrivalControlError('STALE_REVISION', 'Arrival workload changed. Refresh before revising source evidence.', command.reservationId)
+  const requiredRole = command.source === 'folio' ? 'Front Desk Agent' : 'Housekeeping Coordinator'
+  if (command.role !== requiredRole) throw new ArrivalControlError('UNAUTHORIZED', `Only the ${requiredRole.toLowerCase()} can report this source revision.`, command.reservationId)
+  const intervention = [...state.interventions].reverse().find((item) => item.reservationId === command.reservationId)
+  if (!intervention) throw new ArrivalControlError('ARRIVAL_INELIGIBLE', 'Only an active unreleased intervention can revise arrival sources.', command.reservationId)
+  if (intervention.status !== 'manager-escalated' || state.releases.some((item) => item.reservationId === command.reservationId)) throw new ArrivalControlError('ARRIVAL_INELIGIBLE', 'Only an active unreleased intervention can revise arrival sources.', command.reservationId)
+  if (!command.sourceReference.trim() || command.reason.trim().length < 20) throw new Error('Source reference and specific change reason are required.')
+  if (state.sourceRevisions.some((item) => item.reservationId === command.reservationId && item.source === command.source && item.sourceReference === command.sourceReference)) throw new Error('This source revision has already been recorded.')
+  const affectedKinds: ArrivalEvidenceKind[] = command.source === 'folio' ? ['folio-clearance', 'manager-review'] : ['room-inspection', 'occupancy-check', 'manager-review']
+  const affected = state.evidence.filter((item) => item.interventionId === intervention.id && affectedKinds.includes(item.kind) && !state.invalidations.some((invalidation) => invalidation.evidenceId === item.id))
+  const next = structuredClone(state)
+  const arrival = next.arrivals.find((item) => item.reservationId === command.reservationId)
+  if (!arrival) throw new Error('Arrival disappeared during source revision.')
+  if (command.source === 'folio') arrival.folioBlocker = true
+  else arrival.roomStatus = 'blocked'
+  next.sourceRevisions.push({ id: command.id, reservationId: command.reservationId, interventionId: intervention.id, source: command.source, sourceReference: command.sourceReference.trim(), reason: command.reason.trim(), actor: command.actor, revisedOn: command.revisedOn, invalidatedEvidenceIds: affected.map((item) => item.id), immutable: true })
+  for (const evidence of affected) next.invalidations.push({ id: `${command.id}:${evidence.id}`, reservationId: command.reservationId, evidenceId: evidence.id, kind: evidence.kind, team: evidence.team, actor: evidence.actor, sourceRevision: evidence.sourceRevision, invalidatedByInterventionId: intervention.id, change: `${command.source} source ${command.sourceReference.trim()}: ${command.reason.trim()}`, invalidatedOn: command.revisedOn, replacementRequired: true, immutable: true })
+  next.revision += 1
+  return next
+}
+
 interface RecordArrivalEvidence { id: string; expectedRevision: number; role: ArrivalControlRole; reservationId: string; kind: ArrivalEvidenceKind; actor: string; evidenceReference: string; recordedOn: string }
 export function recordArrivalEvidence(state: ArrivalPortfolioState, command: RecordArrivalEvidence) {
   if (state.evidence.some((item) => item.id === command.id)) return state
@@ -81,10 +106,11 @@ export function releaseOperationalArrival(state: ArrivalPortfolioState, command:
   if (!arrival || intervention?.status !== 'manager-escalated') throw new Error('An active manager intervention is required.')
   if (command.replacementRoom !== intervention.replacementRoom || !command.frontDeskAcknowledgement || !command.housekeepingAcknowledgement || !command.originalRoomDisposition || !command.folioClearanceReference || !command.occupancyReference || !command.noShowAuditReference) throw new ArrivalControlError('EVIDENCE_INCOMPLETE', 'Room, housekeeping, folio, occupancy, and no-show evidence must be complete.', command.reservationId)
   const governedEvidence = state.evidence.filter((item) => item.reservationId === command.reservationId)
-  if (governedEvidence.length > 0) {
-    const currentEvidence = governedEvidence.filter((item) => item.interventionId === intervention.id && item.replacementRoom === intervention.replacementRoom)
+  if (governedEvidence.length > 0 || state.sourceRevisions.some((item) => item.reservationId === command.reservationId)) {
+    const currentEvidence = governedEvidence.filter((item) => item.interventionId === intervention.id && item.replacementRoom === intervention.replacementRoom && !state.invalidations.some((invalidation) => invalidation.evidenceId === item.id))
     const missingKinds = (['reservation-check', 'folio-clearance', 'room-inspection', 'occupancy-check', 'manager-review'] as ArrivalEvidenceKind[]).filter((kind) => !currentEvidence.some((item) => item.kind === kind))
     if (missingKinds.length > 0) throw new ArrivalControlError('EVIDENCE_INCOMPLETE', `Independent arrival evidence is missing: ${missingKinds.join(', ')}.`, command.reservationId)
+    if (state.sourceRevisions.some((item) => item.reservationId === command.reservationId && item.source === 'folio') && currentEvidence.filter((item) => item.kind === 'folio-clearance').at(-1)?.evidenceReference !== command.folioClearanceReference) throw new ArrivalControlError('EVIDENCE_INCOMPLETE', 'Release must reference the current independently verified folio clearance.', command.reservationId)
   }
   const next = structuredClone(state)
   const target = next.arrivals.find((item) => item.reservationId === arrival.reservationId)
@@ -151,7 +177,7 @@ export class BrowserArrivalPersistence implements ArrivalPersistence {
     const raw = this.storage.getItem(BrowserArrivalPersistence.key)
     if (!raw) return null
     type SavedRelease = Omit<ArrivalRelease, 'reconciliation'> & { reconciliation?: ArrivalReconciliationSnapshot }
-    const saved = JSON.parse(raw) as Omit<ArrivalPortfolioState, 'releases' | 'evidence' | 'invalidations'> & { evidence?: ArrivalEvidenceRecord[]; invalidations?: ArrivalEvidenceInvalidation[]; releases?: SavedRelease[] }
+    const saved = JSON.parse(raw) as Omit<ArrivalPortfolioState, 'releases' | 'evidence' | 'invalidations' | 'sourceRevisions'> & { evidence?: ArrivalEvidenceRecord[]; invalidations?: ArrivalEvidenceInvalidation[]; sourceRevisions?: ArrivalSourceRevision[]; releases?: SavedRelease[] }
     const releases = (saved.releases ?? []).map((release): ArrivalRelease => {
       if (release.reconciliation) return { ...release, reconciliation: release.reconciliation }
       const guestName = saved.arrivals.find((arrival) => arrival.reservationId === release.reservationId)?.guestName ?? 'Unknown guest'
@@ -167,7 +193,7 @@ export class BrowserArrivalPersistence implements ArrivalPersistence {
         },
       }
     })
-    return { ...saved, evidence: saved.evidence ?? [], invalidations: saved.invalidations ?? [], releases }
+    return { ...saved, evidence: saved.evidence ?? [], invalidations: saved.invalidations ?? [], sourceRevisions: saved.sourceRevisions ?? [], releases }
   }
   save(state: ArrivalPortfolioState) { this.storage.setItem(BrowserArrivalPersistence.key, JSON.stringify(state)) }
 }
@@ -175,5 +201,5 @@ export class ArrivalPortfolioRepository {
   private readonly persistence: ArrivalPersistence
   constructor(persistence: ArrivalPersistence) { this.persistence = persistence }
   read(): ArrivalPortfolioState { return this.persistence.load() ?? structuredClone(initialArrivalPortfolioState) }
-  dispatch(command: EscalateArrival | ReviseArrivalRoom | RecordArrivalEvidence | ReleaseArrival) { const current = this.read(); const next = 'occupancyReference' in command ? releaseOperationalArrival(current, command) : 'roomRevision' in command ? reviseArrivalReplacement(current, command) : 'kind' in command ? recordArrivalEvidence(current, command) : escalateArrivalIntervention(current, command); if (next !== current) this.persistence.save(next); return next }
+  dispatch(command: EscalateArrival | ReviseArrivalRoom | ReviseArrivalSource | RecordArrivalEvidence | ReleaseArrival) { const current = this.read(); const next = 'occupancyReference' in command ? releaseOperationalArrival(current, command) : 'source' in command ? reviseArrivalSource(current, command) : 'roomRevision' in command ? reviseArrivalReplacement(current, command) : 'kind' in command ? recordArrivalEvidence(current, command) : escalateArrivalIntervention(current, command); if (next !== current) this.persistence.save(next); return next }
 }
