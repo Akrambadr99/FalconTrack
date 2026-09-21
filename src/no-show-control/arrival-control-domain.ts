@@ -8,7 +8,8 @@ export function arrivalCapabilities(role: ArrivalControlRole) {
 }
 export interface CoordinatedArrival extends UpcomingArrivalRecord { frontDeskOwner: string; housekeepingOwner: string }
 export interface ArrivalIntervention { id: string; reservationId: string; guestName: string; previousFrontDeskOwner: string; previousHousekeepingOwner: string; frontDeskOwner: string; housekeepingOwner: string; manager: string; replacementRoom: string; folioAction: string; reason: string; status: 'manager-escalated' | 'completed'; immutable: true }
-export interface ArrivalRelease { id: string; reservationId: string; interventionId: string; frontDeskAcknowledgement: string; housekeepingAcknowledgement: string; replacementRoom: string; originalRoomDisposition: string; folioClearanceReference: string; occupancyReference: string; noShowAuditReference: string; releasedBy: string; releasedOn: string; immutable: true }
+export interface ArrivalReconciliationSnapshot { reservation: { reservationId: string; guestName: string; ready: true }; room: { replacementRoom: string; originalRoomDisposition: string; ready: true }; housekeeping: { acknowledgement: string; ready: true }; folio: { clearanceReference: string; blockerCleared: true }; occupancy: { reference: string; conflictFree: true }; noShow: { auditReference: string; reconciled: true } }
+export interface ArrivalRelease { id: string; reservationId: string; interventionId: string; frontDeskAcknowledgement: string; housekeepingAcknowledgement: string; replacementRoom: string; originalRoomDisposition: string; folioClearanceReference: string; occupancyReference: string; noShowAuditReference: string; reconciliation: ArrivalReconciliationSnapshot; releasedBy: string; releasedOn: string; immutable: true }
 export interface ArrivalPortfolioState { revision: number; arrivals: CoordinatedArrival[]; interventions: ArrivalIntervention[]; releases: ArrivalRelease[] }
 export const initialArrivalPortfolioState: ArrivalPortfolioState = { revision: 0, arrivals: seededUpcomingArrivals.map((item) => ({ ...structuredClone(item), frontDeskOwner: item.operationalOwner === 'Front desk' ? item.operationalOwner : 'Front desk west', housekeepingOwner: 'Housekeeping dispatch' })), interventions: [], releases: [] }
 interface EscalateArrival { id: string; expectedRevision: number; role: ArrivalControlRole; reservationId: string; manager: string; frontDeskOwner: string; housekeepingOwner: string; replacementRoom: string; folioAction: string; asOf: string; reason: string }
@@ -48,7 +49,15 @@ export function releaseOperationalArrival(state: ArrivalPortfolioState, command:
   const target = next.arrivals.find((item) => item.reservationId === arrival.reservationId)
   const nextIntervention = next.interventions.find((item) => item.id === intervention.id)
   if (!target || !nextIntervention) throw new Error('Arrival records disappeared during release.')
-  next.releases.push({ ...command, interventionId: intervention.id, immutable: true })
+  const reconciliation: ArrivalReconciliationSnapshot = {
+    reservation: { reservationId: arrival.reservationId, guestName: arrival.guestName, ready: true },
+    room: { replacementRoom: command.replacementRoom, originalRoomDisposition: command.originalRoomDisposition, ready: true },
+    housekeeping: { acknowledgement: command.housekeepingAcknowledgement, ready: true },
+    folio: { clearanceReference: command.folioClearanceReference, blockerCleared: true },
+    occupancy: { reference: command.occupancyReference, conflictFree: true },
+    noShow: { auditReference: command.noShowAuditReference, reconciled: true },
+  }
+  next.releases.push({ ...command, interventionId: intervention.id, reconciliation, immutable: true })
   target.roomStatus = 'ready'
   target.folioBlocker = false
   target.operationalOwner = 'Front desk'
@@ -65,12 +74,37 @@ export function queryArrivalInterventionHistory(state: ArrivalPortfolioState, re
   ]
 }
 
+export function queryArrivalReleaseLineage(state: ArrivalPortfolioState, reservationId: string) {
+  return state.releases.filter((item) => item.reservationId === reservationId).map((item) => ({ releaseId: item.id, interventionId: item.interventionId, releasedOn: item.releasedOn, reconciliation: structuredClone(item.reconciliation) }))
+}
+
 export interface ArrivalPersistence { load(): ArrivalPortfolioState | null; save(state: ArrivalPortfolioState): void }
 export class BrowserArrivalPersistence implements ArrivalPersistence {
   static key = 'staypilot:arrival-urgency-control:v3'
   private readonly storage: Pick<Storage, 'getItem' | 'setItem'>
   constructor(storage: Pick<Storage, 'getItem' | 'setItem'>) { this.storage = storage }
-  load() { const raw = this.storage.getItem(BrowserArrivalPersistence.key); return raw ? JSON.parse(raw) as ArrivalPortfolioState : null }
+  load() {
+    const raw = this.storage.getItem(BrowserArrivalPersistence.key)
+    if (!raw) return null
+    type SavedRelease = Omit<ArrivalRelease, 'reconciliation'> & { reconciliation?: ArrivalReconciliationSnapshot }
+    const saved = JSON.parse(raw) as Omit<ArrivalPortfolioState, 'releases'> & { releases?: SavedRelease[] }
+    const releases = (saved.releases ?? []).map((release): ArrivalRelease => {
+      if (release.reconciliation) return { ...release, reconciliation: release.reconciliation }
+      const guestName = saved.arrivals.find((arrival) => arrival.reservationId === release.reservationId)?.guestName ?? 'Unknown guest'
+      return {
+        ...release,
+        reconciliation: {
+          reservation: { reservationId: release.reservationId, guestName, ready: true },
+          room: { replacementRoom: release.replacementRoom, originalRoomDisposition: release.originalRoomDisposition, ready: true },
+          housekeeping: { acknowledgement: release.housekeepingAcknowledgement, ready: true },
+          folio: { clearanceReference: release.folioClearanceReference, blockerCleared: true },
+          occupancy: { reference: release.occupancyReference, conflictFree: true },
+          noShow: { auditReference: release.noShowAuditReference, reconciled: true },
+        },
+      }
+    })
+    return { ...saved, releases }
+  }
   save(state: ArrivalPortfolioState) { this.storage.setItem(BrowserArrivalPersistence.key, JSON.stringify(state)) }
 }
 export class ArrivalPortfolioRepository {
