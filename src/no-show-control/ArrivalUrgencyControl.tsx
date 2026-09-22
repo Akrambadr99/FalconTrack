@@ -1,8 +1,7 @@
 import { useRef, useState } from "react";
 import { arrivalUrgencyWorkload } from "./arrival-urgency";
+import { AuthoritativeArrivalRepository } from './arrival-source-boundary';
 import {
-  ArrivalPortfolioRepository,
-  BrowserArrivalPersistence,
   explainArrivalReadiness,
   type ArrivalEvidenceKind,
   type ArrivalControlRole,
@@ -11,9 +10,7 @@ import {
 export function ArrivalUrgencyControl() {
   const [repository] = useState(
     () =>
-      new ArrivalPortfolioRepository(
-        new BrowserArrivalPersistence(localStorage),
-      ),
+      new AuthoritativeArrivalRepository(localStorage),
   );
   const [state, setState] = useState(() => repository.read());
   const [role, setRole] = useState<ArrivalControlRole>("Front Desk Agent");
@@ -33,6 +30,7 @@ export function ArrivalUrgencyControl() {
         repository.dispatch({
           id: crypto.randomUUID(),
           expectedRevision: state.revision,
+          expectedWorkspaceRevision: state.workspaceRevision,
           role,
           reservationId: "RES-5812",
           manager: "Duty manager north",
@@ -55,15 +53,16 @@ export function ArrivalUrgencyControl() {
     }
     queueMicrotask(() => feedback.current?.focus());
   };
-  const recordEvidence = () => { const kind: ArrivalEvidenceKind | undefined = readiness?.missingEvidence[0]; if (!kind) return; try { setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, role, reservationId: "RES-5812", kind, actor: role, evidenceReference: `ARRIVAL-${kind}-${String(state.revision)}`, recordedOn: "2026-10-20T14:30:00Z" })); setMessage(`${kind} recorded independently.`); } catch (error) { setMessage(error instanceof Error ? error.message : "Arrival evidence failed."); } queueMicrotask(() => feedback.current?.focus()); };
-  const reviseRoom = () => { try { setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, role, reservationId: "RES-5812", replacementRoom, changedOn: "2026-10-20T14:35:00Z", reason: "Prior replacement room became unavailable before release.", roomRevision: true })); setMessage("Replacement room changed. Each affected team must resubmit evidence."); } catch (error) { setMessage(error instanceof Error ? error.message : "Room revision failed."); } queueMicrotask(() => feedback.current?.focus()); };
-  const reviseSource = (source: 'folio' | 'housekeeping') => { try { setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, role, reservationId: 'RES-5812', source, sourceReference, reason: sourceReason, actor: role, revisedOn: '2026-10-20T14:38:00Z' })); setMessage(`${source} source revised. Only affected team evidence must be resubmitted.`); } catch (error) { setMessage(error instanceof Error ? error.message : 'Arrival source revision failed.'); } queueMicrotask(() => feedback.current?.focus()); };
+  const recordEvidence = () => { const kind: ArrivalEvidenceKind | undefined = readiness?.missingEvidence[0]; if (!kind) return; try { setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, expectedWorkspaceRevision: state.workspaceRevision, role, reservationId: "RES-5812", kind, actor: role, evidenceReference: `ARRIVAL-${kind}-${String(state.revision)}`, recordedOn: "2026-10-20T14:30:00Z" })); setMessage(`${kind} recorded independently.`); } catch (error) { setMessage(error instanceof Error ? error.message : "Arrival evidence failed."); } queueMicrotask(() => feedback.current?.focus()); };
+  const reviseRoom = () => { try { setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, expectedWorkspaceRevision: state.workspaceRevision, role, reservationId: "RES-5812", replacementRoom, changedOn: "2026-10-20T14:35:00Z", reason: "Prior replacement room became unavailable before release.", roomRevision: true })); setMessage("Replacement room changed. Each affected team must resubmit evidence."); } catch (error) { setMessage(error instanceof Error ? error.message : "Room revision failed."); } queueMicrotask(() => feedback.current?.focus()); };
+  const reviseSource = (source: 'folio' | 'housekeeping') => { try { setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, expectedWorkspaceRevision: state.workspaceRevision, role, reservationId: 'RES-5812', source, sourceReference, reason: sourceReason, actor: role, revisedOn: '2026-10-20T14:38:00Z' })); setMessage(`${source} source revised. Only affected team evidence must be resubmitted.`); } catch (error) { setMessage(error instanceof Error ? error.message : 'Arrival source revision failed.'); } queueMicrotask(() => feedback.current?.focus()); };
   const release = () => {
     try {
       setState(
         repository.dispatch({
           id: crypto.randomUUID(),
           expectedRevision: state.revision,
+          expectedWorkspaceRevision: state.workspaceRevision,
           role,
           reservationId: "RES-5812",
           frontDeskAcknowledgement: "FD-ACK-5812",
@@ -90,6 +89,7 @@ export function ArrivalUrgencyControl() {
   return (
     <section className="card" aria-label="Arrival urgency workload">
       <h2>Upcoming arrival urgency</h2>
+      {state.unresolvedSource && <p role="alert">{state.unresolvedSource}</p>}
       <label>
         Arrival control role
         <select
@@ -126,6 +126,8 @@ export function ArrivalUrgencyControl() {
         </p>
       )}
       {readiness?.sourcePins && <p aria-label="Arrival operational source versions">Reservation version {readiness.sourcePins.reservationVersion} · assigned room {readiness.sourcePins.roomId} version {readiness.sourcePins.roomVersion} · folio version {readiness.sourcePins.folioVersion}</p>}
+      <p aria-label="Arrival authoritative records">RES-5812 · guest-5812 · stay-5812 · {state.operationalSources.find((item) => item.reservationId === 'RES-5812')?.reservation.assignedRoomId ?? 'room unresolved'} · folio-5812 · {state.releases.length > 0 ? 'checked-in' : 'reserved'}</p>
+      <button onClick={() => { try { setState(repository.read()); setMessage('Current reservation, room and folio records loaded.'); } catch (error) { setMessage(error instanceof Error ? error.message : 'Authoritative records could not be loaded.'); } queueMicrotask(() => feedback.current?.focus()); }}>Refresh authoritative records</button>
       <button
         disabled={role !== "Duty Manager" || state.interventions.length > 0}
         onClick={escalate}
