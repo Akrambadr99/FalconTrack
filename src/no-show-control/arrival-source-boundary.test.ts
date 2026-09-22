@@ -62,6 +62,42 @@ describe('authoritative arrival source boundary', () => {
     expect(values.get(workspace.key)).toBe(before);
   });
 
+  it('rejects a stale client and lets it retry from the newer authoritative revision', async () => {
+    const { arrival, workspace, storage } = setup();
+    const other = new AuthoritativeArrivalRepository(storage);
+    const stale = arrival.read();
+    const fresh = other.read();
+    other.dispatch({ id: 'other-client-escalation', expectedRevision: fresh.revision, expectedWorkspaceRevision: fresh.workspaceRevision, role: 'Duty Manager', reservationId: 'RES-5812', manager: 'Duty manager north', frontDeskOwner: 'Arrival lead', housekeepingOwner: 'Rooms recovery team', replacementRoom: 'ROOM-824', folioAction: 'Priority deposit clearance', asOf: '2026-10-20T14:00:00Z', reason: 'Guest arrival is within one hour with room and folio blockers.' });
+    const committed = JSON.stringify(workspace.read());
+    await expect(arrival.dispatchCoordinated({ id: 'stale-evidence', expectedRevision: stale.revision, expectedWorkspaceRevision: stale.workspaceRevision, role: 'Front Desk Agent', reservationId: 'RES-5812', kind: 'reservation-check', actor: 'Front Desk Agent', evidenceReference: 'EV-STALE', recordedOn: '2026-10-20T14:30:00Z' })).rejects.toThrow(/Refresh before continuing/);
+    expect(JSON.stringify(workspace.read())).toBe(committed);
+    const refreshed = arrival.read();
+    await arrival.dispatchCoordinated({ id: 'fresh-evidence', expectedRevision: refreshed.revision, expectedWorkspaceRevision: refreshed.workspaceRevision, role: 'Front Desk Agent', reservationId: 'RES-5812', kind: 'reservation-check', actor: 'Front Desk Agent', evidenceReference: 'EV-FRESH', recordedOn: '2026-10-20T14:30:00Z' });
+    expect(arrival.read().evidence.map((item) => item.id)).toContain('fresh-evidence');
+  });
+
+  it('detects a workspace revision changing during arrival computation before any stale write', () => {
+    const { values, storage, workspace } = setup();
+    const arrival = new AuthoritativeArrivalRepository(storage);
+    const current = arrival.read();
+    let reads = 0;
+    const racing = {
+      getItem: (key: string) => {
+        if (key === workspace.key && ++reads === 2) {
+          const changed = workspace.read();
+          changed.revision += 1;
+          values.set(key, JSON.stringify(changed));
+        }
+        return storage.getItem(key);
+      },
+      setItem: storage.setItem,
+    };
+    const client = new AuthoritativeArrivalRepository(racing);
+    expect(() => client.dispatch({ id: 'racing-escalation', expectedRevision: current.revision, expectedWorkspaceRevision: current.workspaceRevision, role: 'Duty Manager', reservationId: 'RES-5812', manager: 'Duty manager north', frontDeskOwner: 'Arrival lead', housekeepingOwner: 'Rooms recovery team', replacementRoom: 'ROOM-824', folioAction: 'Priority deposit clearance', asOf: '2026-10-20T14:00:00Z', reason: 'Guest arrival is within one hour with room and folio blockers.' })).toThrow(/before arrival was saved/);
+    expect(workspace.read().entities.find((item) => item.id === 'stay-5812')?.fields['room']).toBe('ROOM-512');
+    expect((workspace.read() as { arrivalControl?: unknown }).arrivalControl).toBeUndefined();
+  });
+
   it('invalidates only evidence dependent on a changed authoritative folio revision', () => {
     const { arrival, workspace, storage } = setup();
     escalate(arrival);

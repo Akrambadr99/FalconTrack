@@ -24,10 +24,10 @@ export function ArrivalUrgencyControl() {
     "2026-10-20T14:00:00Z",
   );
   const readiness = explainArrivalReadiness(state, "RES-5812");
-  const escalate = () => {
+  const escalate = async () => {
     try {
       setState(
-        repository.dispatch({
+        await repository.dispatchCoordinated({
           id: crypto.randomUUID(),
           expectedRevision: state.revision,
           expectedWorkspaceRevision: state.workspaceRevision,
@@ -53,13 +53,13 @@ export function ArrivalUrgencyControl() {
     }
     queueMicrotask(() => feedback.current?.focus());
   };
-  const recordEvidence = () => { const kind: ArrivalEvidenceKind | undefined = readiness?.missingEvidence[0]; if (!kind) return; try { setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, expectedWorkspaceRevision: state.workspaceRevision, role, reservationId: "RES-5812", kind, actor: role, evidenceReference: `ARRIVAL-${kind}-${String(state.revision)}`, recordedOn: "2026-10-20T14:30:00Z" })); setMessage(`${kind} recorded independently.`); } catch (error) { setMessage(error instanceof Error ? error.message : "Arrival evidence failed."); } queueMicrotask(() => feedback.current?.focus()); };
-  const reviseRoom = () => { try { setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, expectedWorkspaceRevision: state.workspaceRevision, role, reservationId: "RES-5812", replacementRoom, changedOn: "2026-10-20T14:35:00Z", reason: "Prior replacement room became unavailable before release.", roomRevision: true })); setMessage("Replacement room changed. Each affected team must resubmit evidence."); } catch (error) { setMessage(error instanceof Error ? error.message : "Room revision failed."); } queueMicrotask(() => feedback.current?.focus()); };
-  const reviseSource = (source: 'folio' | 'housekeeping') => { try { setState(repository.dispatch({ id: crypto.randomUUID(), expectedRevision: state.revision, expectedWorkspaceRevision: state.workspaceRevision, role, reservationId: 'RES-5812', source, sourceReference, reason: sourceReason, actor: role, revisedOn: '2026-10-20T14:38:00Z' })); setMessage(`${source} source revised. Only affected team evidence must be resubmitted.`); } catch (error) { setMessage(error instanceof Error ? error.message : 'Arrival source revision failed.'); } queueMicrotask(() => feedback.current?.focus()); };
-  const release = () => {
+  const recordEvidence = async () => { const kind: ArrivalEvidenceKind | undefined = readiness?.missingEvidence[0]; if (!kind) return; try { setState(await repository.dispatchCoordinated({ id: crypto.randomUUID(), expectedRevision: state.revision, expectedWorkspaceRevision: state.workspaceRevision, role, reservationId: "RES-5812", kind, actor: role, evidenceReference: `ARRIVAL-${kind}-${String(state.revision)}`, recordedOn: "2026-10-20T14:30:00Z" })); setMessage(`${kind} recorded independently.`); } catch (error) { setMessage(error instanceof Error ? error.message : "Arrival evidence failed."); } queueMicrotask(() => feedback.current?.focus()); };
+  const reviseRoom = async () => { try { setState(await repository.dispatchCoordinated({ id: crypto.randomUUID(), expectedRevision: state.revision, expectedWorkspaceRevision: state.workspaceRevision, role, reservationId: "RES-5812", replacementRoom, changedOn: "2026-10-20T14:35:00Z", reason: "Prior replacement room became unavailable before release.", roomRevision: true })); setMessage("Replacement room changed. Each affected team must resubmit evidence."); } catch (error) { setMessage(error instanceof Error ? error.message : "Room revision failed."); } queueMicrotask(() => feedback.current?.focus()); };
+  const reviseSource = async (source: 'folio' | 'housekeeping') => { try { setState(await repository.dispatchCoordinated({ id: crypto.randomUUID(), expectedRevision: state.revision, expectedWorkspaceRevision: state.workspaceRevision, role, reservationId: 'RES-5812', source, sourceReference, reason: sourceReason, actor: role, revisedOn: '2026-10-20T14:38:00Z' })); setMessage(`${source} source revised. Only affected team evidence must be resubmitted.`); } catch (error) { setMessage(error instanceof Error ? error.message : 'Arrival source revision failed.'); } queueMicrotask(() => feedback.current?.focus()); };
+  const release = async () => {
     try {
       setState(
-        repository.dispatch({
+        await repository.dispatchCoordinated({
           id: crypto.randomUUID(),
           expectedRevision: state.revision,
           expectedWorkspaceRevision: state.workspaceRevision,
@@ -130,14 +130,14 @@ export function ArrivalUrgencyControl() {
       <button onClick={() => { try { setState(repository.read()); setMessage('Current reservation, room and folio records loaded.'); } catch (error) { setMessage(error instanceof Error ? error.message : 'Authoritative records could not be loaded.'); } queueMicrotask(() => feedback.current?.focus()); }}>Refresh authoritative records</button>
       <button
         disabled={role !== "Duty Manager" || state.interventions.length > 0}
-        onClick={escalate}
+        onClick={() => { void escalate(); }}
       >
         Approve replacement and escalate arrival
       </button>
       <label>New replacement room <input value={replacementRoom} onChange={(event) => { setReplacementRoom(event.target.value); }} /></label>
-      <button disabled={role !== "Duty Manager" || state.interventions.length === 0 || state.releases.length > 0} onClick={reviseRoom}>Revise replacement room</button>
-      <fieldset><legend>Revised arrival source</legend><label>Source reference<input value={sourceReference} onChange={(event) => { setSourceReference(event.target.value); }} /></label><label>Source change reason<input value={sourceReason} onChange={(event) => { setSourceReason(event.target.value); }} /></label><button disabled={role !== 'Front Desk Agent' || state.interventions.length === 0 || state.releases.length > 0} onClick={() => { reviseSource('folio'); }}>Record revised folio source</button><button disabled={role !== 'Housekeeping Coordinator' || state.interventions.length === 0 || state.releases.length > 0} onClick={() => { reviseSource('housekeeping'); }}>Record revised housekeeping source</button></fieldset>
-      <button disabled={state.interventions.length === 0 || !readiness?.missingEvidence.length || (readiness.missingEvidence[0] === "room-inspection" && role !== "Housekeeping Coordinator") || (readiness.missingEvidence[0] === "manager-review" && role !== "Duty Manager") || (!["room-inspection", "manager-review"].includes(readiness.missingEvidence[0] ?? "") && role !== "Front Desk Agent")} onClick={recordEvidence}>Record next team evidence</button>
+      <button disabled={role !== "Duty Manager" || state.interventions.length === 0 || state.releases.length > 0} onClick={() => { void reviseRoom(); }}>Revise replacement room</button>
+      <fieldset><legend>Revised arrival source</legend><label>Source reference<input value={sourceReference} onChange={(event) => { setSourceReference(event.target.value); }} /></label><label>Source change reason<input value={sourceReason} onChange={(event) => { setSourceReason(event.target.value); }} /></label><button disabled={role !== 'Front Desk Agent' || state.interventions.length === 0 || state.releases.length > 0} onClick={() => { void reviseSource('folio'); }}>Record revised folio source</button><button disabled={role !== 'Housekeeping Coordinator' || state.interventions.length === 0 || state.releases.length > 0} onClick={() => { void reviseSource('housekeeping'); }}>Record revised housekeeping source</button></fieldset>
+      <button disabled={state.interventions.length === 0 || !readiness?.missingEvidence.length || (readiness.missingEvidence[0] === "room-inspection" && role !== "Housekeeping Coordinator") || (readiness.missingEvidence[0] === "manager-review" && role !== "Duty Manager") || (!["room-inspection", "manager-review"].includes(readiness.missingEvidence[0] ?? "") && role !== "Front Desk Agent")} onClick={() => { void recordEvidence(); }}>Record next team evidence</button>
       <button
         disabled={
           role !== "Duty Manager" ||
@@ -145,7 +145,7 @@ export function ArrivalUrgencyControl() {
           (state.evidence.length > 0 && !readiness?.independentlyVerified) ||
           state.releases.length > 0
         }
-        onClick={release}
+        onClick={() => { void release(); }}
       >
         Release arrival after final reconciliation
       </button>

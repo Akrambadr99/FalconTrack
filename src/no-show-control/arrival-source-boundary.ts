@@ -134,6 +134,12 @@ export class AuthoritativeArrivalRepository {
     return { workspace, arrival, source };
   }
   read(): ArrivalPortfolioState { return this.bundle().arrival; }
+  async dispatchCoordinated(command: ArrivalCommand): Promise<ArrivalPortfolioState> {
+    if (typeof navigator !== 'undefined' && 'locks' in navigator) {
+      return navigator.locks.request(this.workspace.key, () => this.dispatch(command));
+    }
+    return this.dispatch(command);
+  }
   dispatch(command: ArrivalCommand): ArrivalPortfolioState {
     const { workspace, arrival, source } = this.bundle();
     if (arrival.unresolvedSource) throw new Error(arrival.unresolvedSource);
@@ -163,6 +169,7 @@ export class AuthoritativeArrivalRepository {
     const { operationalSources: _sources, ...history } = nextArrival;
     void _sources;
     (nextWorkspace as ArrivalWorkspace).arrivalControl = { ...history, operationalSources: [] };
+    if (this.workspace.read().revision !== workspace.revision) throw new Error('Another client changed the authoritative workspace before arrival was saved. Refresh and retry.');
     this.storage.setItem(this.workspace.key, JSON.stringify(nextWorkspace));
     return this.read();
   }
