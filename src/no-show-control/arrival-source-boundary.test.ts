@@ -76,6 +76,39 @@ describe('authoritative arrival source boundary', () => {
     expect(arrival.read().evidence.map((item) => item.id)).toContain('fresh-evidence');
   });
 
+  it('coordinates a room edit before arrival and revalidates the replacement against its new source revision', async () => {
+    const { arrival, workspace, values } = setup();
+    const stale = arrival.read();
+    const room = workspace.read().entities.find((item) => item.id === 'ROOM-824');
+    if (!room) throw new Error('Replacement room missing');
+    await workspace.commitCoordinated({ id: 'revise-room-rate', expectedRevision: 0, actorId: 'actor-0', type: 'edit', entityId: room.id, title: room.title, input: { ...room.fields, rate: 16000 } }, '2026-10-20T13:55:00Z');
+    const before = values.get(workspace.key);
+    await expect(arrival.dispatchCoordinated({ id: 'stale-arrival', expectedRevision: stale.revision, expectedWorkspaceRevision: stale.workspaceRevision, role: 'Duty Manager', reservationId: 'RES-5812', manager: 'Duty manager north', frontDeskOwner: 'Arrival lead', housekeepingOwner: 'Rooms recovery team', replacementRoom: 'ROOM-824', folioAction: 'Priority deposit clearance', asOf: '2026-10-20T14:00:00Z', reason: 'Guest arrival is within one hour with room and folio blockers.' })).rejects.toThrow('Refresh before continuing');
+    expect(values.get(workspace.key)).toBe(before);
+    const refreshed = arrival.read();
+    expect(refreshed.operationalSources.find((item) => item.reservationId === 'RES-5812')?.rooms.find((item) => item.id === 'ROOM-824')?.version).toBe(2);
+    await arrival.dispatchCoordinated({ id: 'revalidated-arrival', expectedRevision: refreshed.revision, expectedWorkspaceRevision: refreshed.workspaceRevision, role: 'Duty Manager', reservationId: 'RES-5812', manager: 'Duty manager north', frontDeskOwner: 'Arrival lead', housekeepingOwner: 'Rooms recovery team', replacementRoom: 'ROOM-824', folioAction: 'Priority deposit clearance', asOf: '2026-10-20T14:00:00Z', reason: 'Guest arrival is within one hour with room and folio blockers.' });
+    expect(workspace.read().entities.find((item) => item.id === 'ROOM-824')?.fields['rate']).toBe(16000);
+    expect(arrival.read().interventions).toHaveLength(1);
+  });
+
+  it('rejects a stale operations edit after arrival changes the shared workspace and preserves arrival history', async () => {
+    const { arrival, workspace, values } = setup();
+    const stale = workspace.read();
+    const room = stale.entities.find((item) => item.id === 'ROOM-826');
+    if (!room) throw new Error('Inventory room missing');
+    const refreshedArrival = arrival.read();
+    await arrival.dispatchCoordinated({ id: 'arrival-first', expectedRevision: refreshedArrival.revision, expectedWorkspaceRevision: refreshedArrival.workspaceRevision, role: 'Duty Manager', reservationId: 'RES-5812', manager: 'Duty manager north', frontDeskOwner: 'Arrival lead', housekeepingOwner: 'Rooms recovery team', replacementRoom: 'ROOM-824', folioAction: 'Priority deposit clearance', asOf: '2026-10-20T14:00:00Z', reason: 'Guest arrival is within one hour with room and folio blockers.' });
+    const before = values.get(workspace.key);
+    const edit = { id: 'edit-after-arrival', expectedRevision: stale.revision, actorId: 'actor-0', type: 'edit' as const, entityId: room.id, title: room.title, input: { ...room.fields, rate: 17000 } };
+    await expect(workspace.commitCoordinated(edit, '2026-10-20T14:05:00Z')).rejects.toThrow('Refresh and review');
+    expect(values.get(workspace.key)).toBe(before);
+    const freshWorkspace = workspace.read();
+    await workspace.commitCoordinated({ ...edit, expectedRevision: freshWorkspace.revision }, '2026-10-20T14:05:00Z');
+    expect(arrival.read().interventions.map((item) => item.id)).toContain('arrival-first');
+    expect(workspace.read().entities.find((item) => item.id === 'ROOM-826')?.fields['rate']).toBe(17000);
+  });
+
   it('detects a workspace revision changing during arrival computation before any stale write', () => {
     const { values, storage, workspace } = setup();
     const arrival = new AuthoritativeArrivalRepository(storage);

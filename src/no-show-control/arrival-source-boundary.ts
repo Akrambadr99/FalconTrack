@@ -1,5 +1,5 @@
 import { product } from '../product/definition';
-import { Repository, type StoragePort } from '../workspace/repository';
+import { coordinateWorkspaceWrite, Repository, type StoragePort } from '../workspace/repository';
 import type { Entity, Snapshot } from '../workspace/types';
 import { validateSnapshot } from '../workspace/validation';
 import {
@@ -135,10 +135,7 @@ export class AuthoritativeArrivalRepository {
   }
   read(): ArrivalPortfolioState { return this.bundle().arrival; }
   async dispatchCoordinated(command: ArrivalCommand): Promise<ArrivalPortfolioState> {
-    if (typeof navigator !== 'undefined' && 'locks' in navigator) {
-      return navigator.locks.request(this.workspace.key, () => this.dispatch(command));
-    }
-    return this.dispatch(command);
+    return coordinateWorkspaceWrite(this.workspace.key, () => this.dispatch(command));
   }
   dispatch(command: ArrivalCommand): ArrivalPortfolioState {
     const { workspace, arrival, source } = this.bundle();

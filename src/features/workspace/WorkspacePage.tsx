@@ -55,9 +55,9 @@ export function WorkspacePage() {
         window.addEventListener('storage', sync);
         return () => window.removeEventListener('storage', sync);
     }, [repository]);
-    const commit = (command: Parameters<Repository['commit']>[0]) => {
+    const commit = async (command: Parameters<Repository['commit']>[0]) => {
         try {
-            const next = repository.commit(command, new Date().toISOString());
+            const next = await repository.commitCoordinated(command, new Date().toISOString());
             setSnapshot(next);
             setNotice(next.audit.at(-1)?.summary ?? 'Saved.');
             setDialog(null);
@@ -67,10 +67,11 @@ export function WorkspacePage() {
             setCommandError(error instanceof Error ? error.message : 'Operation failed.');
         }
     };
-    const openCreate = () => { setValues(initialValues(definition?.fields ?? [])); setTitle(''); setDialog('create'); };
+    const openCreate = () => { setCommandRevision(snapshot.revision); setValues(initialValues(definition?.fields ?? [])); setTitle(''); setDialog('create'); };
     const openEdit = () => {
         if (!selected)
             return;
+        setCommandRevision(snapshot.revision);
         setValues({ ...selected.fields });
         setTitle(selected.title);
         setDialog('edit');
@@ -84,11 +85,11 @@ export function WorkspacePage() {
         event.preventDefault();
         const id = crypto.randomUUID();
         if (dialog === 'create')
-            commit({ id, expectedRevision: snapshot.revision, actorId, type: 'create', kind, title, input: values });
+            void commit({ id, expectedRevision: commandRevision, actorId, type: 'create', kind, title, input: values });
         else if (dialog === 'edit' && selected)
-            commit({ id, expectedRevision: snapshot.revision, actorId, type: 'edit', entityId: selected.id, title, input: values });
+            void commit({ id, expectedRevision: commandRevision, actorId, type: 'edit', entityId: selected.id, title, input: values });
         else if (dialog === 'operate')
-            commit({ id, expectedRevision: commandRevision, actorId: commandActor, type: 'operate', entityId: commandTarget, operation, input: values });
+            void commit({ id, expectedRevision: commandRevision, actorId: commandActor, type: 'operate', entityId: commandTarget, operation, input: values });
     };
     const formFields = dialog === 'operate' ? product.operations.find(item => item.key === operation)?.fields ?? [] : definition?.fields ?? [];
     const importBackup = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -96,7 +97,7 @@ export function WorkspacePage() {
         if (!file)
             return;
         try {
-            setSnapshot(repository.restore(await file.text(), snapshot.revision, actorId, new Date().toISOString()));
+            setSnapshot(await repository.restoreCoordinated(await file.text(), snapshot.revision, actorId, new Date().toISOString()));
             setNotice('Validated backup restored.');
         }
         catch (error) {
@@ -115,7 +116,7 @@ export function WorkspacePage() {
         <section className="workspace"><div className="list"><div className="filters"><input aria-label="Search records" placeholder="Search records…" value={query} onChange={event => setQuery(event.target.value)}/><select aria-label="Filter status" value={status} onChange={event => setStatus(event.target.value)}><option value="">All states</option>{definition?.states.map(item => <option key={item}>{item}</option>)}</select><button title="Export current view" onClick={() => download(kind + '.csv', csv(rows), 'text/csv')}>CSV</button></div>{rows.map(row => <button className={selectedId === row.id ? 'row selected' : 'row'} key={row.id} onClick={() => setSelectedId(row.id)}><span><strong>{row.title}</strong><small>{row.id} · r{row.revision}</small></span><em>{row.status}</em></button>)}{rows.length === 0 && <p className="empty">No records match this view.</p>}</div>
           <div className="detail">{selected ? <><div className="detail-title"><div><small>{selected.kind.toUpperCase()}</small><h2>{selected.title}</h2></div><span>{selected.status}</span></div><dl>{definition?.fields.map(field => <div key={field.key}><dt>{field.label}</dt><dd>{display(selected.fields[field.key], snapshot.entities)}</dd></div>)}</dl><div className="toolbar"><button onClick={openEdit}>Edit draft</button>{available.map(item => <button className="primary" key={item.key} onClick={() => openOperation(item.key)}>{item.label}</button>)}</div><Linked entity={selected} snapshot={snapshot}/><History entity={selected} snapshot={snapshot}/></> : <p className="empty">Choose a record to inspect it.</p>}</div></section>
       </main></div>
-    {dialog && <dialog ref={modalRef} aria-labelledby="command-title" onCancel={() => setDialog(null)}><form className="modal" onSubmit={submit}><div><h2 id="command-title">{dialog === 'operate' ? product.operations.find(item => item.key === operation)?.label : dialog === 'create' ? 'Create record' : 'Edit draft'}</h2><button type="button" aria-label="Close dialog" onClick={() => setDialog(null)}>×</button></div>{dialog !== 'operate' && <label>Record title<input required maxLength={200} value={title} onChange={event => setTitle(event.target.value)}/></label>}{formFields.map(field => <Editor key={field.key} field={field} value={values[field.key]} entities={snapshot.entities} onChange={value => setValues(current => ({ ...current, [field.key]: value }))}/>)}{commandError && <p role="alert">{commandError}</p>}{dialog === 'operate' && <button type="button" onClick={() => { const latest = repository.read(); setSnapshot(latest); setCommandRevision(latest.revision); setCommandError(''); }}>Refresh records and retain input</button>}<button className="primary" type="submit">Save command</button></form></dialog>}
+    {dialog && <dialog ref={modalRef} aria-labelledby="command-title" onCancel={() => setDialog(null)}><form className="modal" onSubmit={submit}><div><h2 id="command-title">{dialog === 'operate' ? product.operations.find(item => item.key === operation)?.label : dialog === 'create' ? 'Create record' : 'Edit draft'}</h2><button type="button" aria-label="Close dialog" onClick={() => setDialog(null)}>×</button></div>{dialog !== 'operate' && <label>Record title<input required maxLength={200} value={title} onChange={event => setTitle(event.target.value)}/></label>}{formFields.map(field => <Editor key={field.key} field={field} value={values[field.key]} entities={snapshot.entities} onChange={value => setValues(current => ({ ...current, [field.key]: value }))}/>)}{commandError && <p role="alert">{commandError}</p>}<button type="button" onClick={() => { const latest = repository.read(); setSnapshot(latest); setCommandRevision(latest.revision); setCommandError(''); }}>Refresh records and retain input</button><button className="primary" type="submit">Save command</button></form></dialog>}
   </div>;
 }
 function display(value: Value | undefined, entities: Entity[]) {
