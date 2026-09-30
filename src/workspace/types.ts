@@ -75,6 +75,7 @@ export interface Product {
     actors: Actor[];
     kinds: Kind[];
     operations: Operation[];
+    prepareOperation?: (operation: string) => Promise<void>;
     seed: Entity[];
     validate: (entities: Entity[]) => void;
     metrics: (entities: Entity[]) => {

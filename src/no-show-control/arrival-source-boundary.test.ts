@@ -264,6 +264,7 @@ it('registers a real pending arrival explicitly and executes its independent aut
   }
   arrival.dispatch({ id: 'release-Maya', expectedRevision: current.revision, expectedWorkspaceRevision: current.workspaceRevision, role: 'Duty Manager', reservationId: 'RES-5824', frontDeskAcknowledgement: 'FD-MAYA', housekeepingAcknowledgement: 'HK-MAYA', replacementRoom: 'ROOM-826', originalRoomDisposition: 'Registered original room retained', folioClearanceReference: 'MAYA-folio-clearance', occupancyReference: 'MAYA-OCC', noShowAuditReference: 'MAYA-NOSHOW', releasedBy: 'Duty manager north', releasedOn: '2026-10-20T14:45:00Z' });
   const releasedWorkspace = workspace.read();
+  expect(releasedWorkspace.entities.find((item) => item.id === 'RES-5824:folio')?.fields).toMatchObject({ bookedArrival: '2026-10-20', bookedDeparture: '2026-10-22', bookedRate: 15000 });
   const replayed = arrival.dispatch({ id: 'release-Maya', expectedRevision: current.revision, expectedWorkspaceRevision: current.workspaceRevision, role: 'Duty Manager', reservationId: 'RES-5824', frontDeskAcknowledgement: 'FD-MAYA', housekeepingAcknowledgement: 'HK-MAYA', replacementRoom: 'ROOM-826', originalRoomDisposition: 'Registered original room retained', folioClearanceReference: 'MAYA-folio-clearance', occupancyReference: 'MAYA-OCC', noShowAuditReference: 'MAYA-NOSHOW', releasedBy: 'Duty manager north', releasedOn: '2026-10-20T14:45:00Z' });
   expect(replayed.releases).toHaveLength(1);
   expect(workspace.read()).toEqual(releasedWorkspace);

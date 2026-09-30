@@ -116,6 +116,9 @@ function applyArrivalSource(snapshot: Snapshot, before: ArrivalOperationalSource
     if (room.status !== 'occupied') throw new Error('The released room is not occupied.');
     const nights = Math.round((Date.parse(String(stay.fields['departure'])) - Date.parse(String(stay.fields['arrival']))) / 86400000);
     folio.fields['charges'] = nights * Number(room.fields['rate']);
+    folio.fields['bookedArrival'] = String(stay.fields['arrival']);
+    folio.fields['bookedDeparture'] = String(stay.fields['departure']);
+    folio.fields['bookedRate'] = Number(room.fields['rate']);
     folio.revision += 1;
     stay.status = 'checked-in';
     stay.revision += 1;

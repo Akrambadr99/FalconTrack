@@ -17,7 +17,11 @@ export class Repository {
     private readonly storage: StoragePort;
     constructor(product: Product, storage: StoragePort) { this.product = product; this.storage = storage; this.key = product.name.toLowerCase() + ':workspace:v1'; }
     read(): Snapshot { const raw = this.storage.getItem(this.key); return raw === null ? fresh(this.product) : decode(raw, this.product); }
-    commitCoordinated(command: Command, now: string): Promise<Snapshot> { return coordinateWorkspaceWrite(this.key, () => this.commit(command, now)); }
+    async commitCoordinated(command: Command, now: string): Promise<Snapshot> {
+        // Loading happens before the write lock; commit rereads and validates the captured revision afterwards.
+        if (command.type === 'operate' && command.operation) await this.product.prepareOperation?.(command.operation);
+        return coordinateWorkspaceWrite(this.key, () => this.commit(command, now));
+    }
     commit(command: Command, now: string): Snapshot {
         const before = this.read();
         const next = execute(before, command, this.product, now);

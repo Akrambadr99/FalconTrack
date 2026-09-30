@@ -5,30 +5,47 @@ import type { Repository } from '../../workspace/repository';
 import { useAppServices } from '../../application/useAppServices';
 import { csv, linkedRecords, queryEntities } from '../../workspace/selectors';
 import type { Entity, Field, Snapshot, Value } from '../../workspace/types';
+import { validateFields } from '../../workspace/validation';
 import { DomainWorkflowPanel } from './DomainWorkflowPanel';
 import { DomainDepthPanel } from './DomainDepthPanel';
 import { DomainLifecyclePanel } from './DomainLifecyclePanel';
 const initialValues = (fields: Field[]) => Object.fromEntries(fields.map(field => [field.key, field.initial ?? (field.type === 'number' ? 0 : '')]));
 const download = (name: string, body: string, type: string) => { const anchor = document.createElement('a'); anchor.href = URL.createObjectURL(new Blob([body], { type })); anchor.download = name; anchor.click(); URL.revokeObjectURL(anchor.href); };
+const departureRecoveryKey = 'staypilot:departure-command-recovery:v1';
+interface DepartureCommandRecovery { operation: string; target: string; actor: string; revision: number; values: Record<string, Value> }
+function readDepartureCommand(snapshot: Snapshot): DepartureCommandRecovery | null {
+    try {
+        const raw = localStorage.getItem(departureRecoveryKey); if (!raw) return null;
+        const parsed: unknown = JSON.parse(raw); if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+        const saved = parsed as Partial<DepartureCommandRecovery>;
+        if (typeof saved.operation !== 'string' || !saved.operation.startsWith('departure-') || typeof saved.target !== 'string' || typeof saved.actor !== 'string' || typeof saved.revision !== 'number' || !Number.isSafeInteger(saved.revision) || saved.revision < 0 || !saved.values || typeof saved.values !== 'object' || Array.isArray(saved.values) || Object.values(saved.values).some(value => !['string', 'number', 'boolean'].includes(typeof value))) return null;
+        const operation = product.operations.find(item => item.key === saved.operation), target = snapshot.entities.find(item => item.id === saved.target), actor = product.actors.find(item => item.id === saved.actor);
+        if (!operation || operation.kind !== target?.kind || !actor || !operation.roles.includes(actor.role)) return null;
+        validateFields(saved.values, operation.fields ?? [], snapshot.entities);
+        return saved as DepartureCommandRecovery;
+    } catch { return null; }
+}
 export function WorkspacePage() {
     const { repository } = useAppServices();
     const [snapshot, setSnapshot] = useState<Snapshot>(() => repository.read());
-    const [kind, setKind] = useState(product.kinds[0]?.key ?? '');
-    const [selectedId, setSelectedId] = useState(product.seed[0]?.id ?? '');
-    const [actorId, setActorId] = useState(product.actors[0]?.id ?? '');
+    const [departureRecovery] = useState(() => readDepartureCommand(snapshot));
+    const [departureLoadingFailure, setDepartureLoadingFailure] = useState(false);
+    const [kind, setKind] = useState(departureRecovery ? snapshot.entities.find(item => item.id === departureRecovery.target)?.kind ?? '' : product.kinds[0]?.key ?? '');
+    const [selectedId, setSelectedId] = useState(departureRecovery?.target ?? product.seed[0]?.id ?? '');
+    const [actorId, setActorId] = useState(departureRecovery?.actor ?? product.actors[0]?.id ?? '');
     const [query, setQuery] = useState('');
     const [status, setStatus] = useState('');
-    const [notice, setNotice] = useState('');
-    const [dialog, setDialog] = useState<'create' | 'edit' | 'operate' | null>(null);
-    const [operation, setOperation] = useState('');
-    const [values, setValues] = useState<Record<string, Value>>({});
+    const [notice, setNotice] = useState(departureRecovery ? 'Departure draft restored; review the input against the current source records before saving.' : '');
+    const [dialog, setDialog] = useState<'create' | 'edit' | 'operate' | null>(departureRecovery ? 'operate' : null);
+    const [operation, setOperation] = useState(departureRecovery?.operation ?? '');
+    const [values, setValues] = useState<Record<string, Value>>(departureRecovery?.values ?? {});
     const [title, setTitle] = useState('');
     const importRef = useRef<HTMLInputElement>(null);
     const modalRef = useRef<HTMLDialogElement>(null);
-    const [commandRevision, setCommandRevision] = useState(snapshot.revision);
-    const [commandTarget, setCommandTarget] = useState('');
-    const [commandActor, setCommandActor] = useState('');
-    const [commandError, setCommandError] = useState('');
+    const [commandRevision, setCommandRevision] = useState(departureRecovery?.revision ?? snapshot.revision);
+    const [commandTarget, setCommandTarget] = useState(departureRecovery?.target ?? '');
+    const [commandActor, setCommandActor] = useState(departureRecovery?.actor ?? '');
+    const [commandError, setCommandError] = useState(departureRecovery && departureRecovery.revision !== snapshot.revision ? 'Departure sources changed during reload. Refresh records and retain input before retrying.' : '');
     useEffect(() => {
         if (!dialog) return;
         const trigger = document.activeElement;
@@ -60,12 +77,23 @@ export function WorkspacePage() {
             const next = await repository.commitCoordinated(command, new Date().toISOString());
             setSnapshot(next);
             setNotice(next.audit.at(-1)?.summary ?? 'Saved.');
+            if (command.operation?.startsWith('departure-')) { try { localStorage.removeItem(departureRecoveryKey); } catch { setNotice('Command saved; the recovery draft could not be cleared. Review source state before any retry.'); } }
+            setDepartureLoadingFailure(false);
             setDialog(null);
         }
         catch (error) {
             setNotice(error instanceof Error ? error.message : 'Operation failed.');
             setCommandError(error instanceof Error ? error.message : 'Operation failed.');
+            setDepartureLoadingFailure(error instanceof Error && error.cause === 'departure-load');
         }
+    };
+    const cancelCommand = () => { if (dialog === 'operate' && operation.startsWith('departure-')) { try { localStorage.removeItem(departureRecoveryKey); } catch { setNotice('Departure cancelled; saved recovery input could not be cleared.'); } } setDepartureLoadingFailure(false); setDialog(null); };
+    const reloadDepartureCommand = () => {
+        try {
+            const draft: DepartureCommandRecovery = { operation, target: commandTarget, actor: commandActor, revision: commandRevision, values };
+            localStorage.setItem(departureRecoveryKey, JSON.stringify(draft));
+            window.location.reload();
+        } catch { setCommandError('Departure draft could not be saved. Keep this form open and retry when browser storage is available.'); }
     };
     const openCreate = () => { setCommandRevision(snapshot.revision); setValues(initialValues(definition?.fields ?? [])); setTitle(''); setDialog('create'); };
     const openEdit = () => {
@@ -79,7 +107,7 @@ export function WorkspacePage() {
     const openOperation = (key: string, targetId = selectedId) => {
         const selectedOperation = product.operations.find(item => item.key === key);
         setCommandRevision(snapshot.revision); setCommandTarget(targetId); setCommandActor(actorId); setCommandError('');
-        setOperation(key); setValues(initialValues(selectedOperation?.fields ?? [])); setDialog('operate');
+        setDepartureLoadingFailure(false); setOperation(key); setValues(initialValues(selectedOperation?.fields ?? [])); setDialog('operate');
     };
     const submit = (event: FormEvent) => {
         event.preventDefault();
@@ -116,7 +144,7 @@ export function WorkspacePage() {
         <section className="workspace"><div className="list"><div className="filters"><input aria-label="Search records" placeholder="Search records…" value={query} onChange={event => setQuery(event.target.value)}/><select aria-label="Filter status" value={status} onChange={event => setStatus(event.target.value)}><option value="">All states</option>{definition?.states.map(item => <option key={item}>{item}</option>)}</select><button title="Export current view" onClick={() => download(kind + '.csv', csv(rows), 'text/csv')}>CSV</button></div>{rows.map(row => <button className={selectedId === row.id ? 'row selected' : 'row'} key={row.id} onClick={() => setSelectedId(row.id)}><span><strong>{row.title}</strong><small>{row.id} · r{row.revision}</small></span><em>{row.status}</em></button>)}{rows.length === 0 && <p className="empty">No records match this view.</p>}</div>
           <div className="detail">{selected ? <><div className="detail-title"><div><small>{selected.kind.toUpperCase()}</small><h2>{selected.title}</h2></div><span>{selected.status}</span></div><dl>{definition?.fields.map(field => <div key={field.key}><dt>{field.label}</dt><dd>{display(selected.fields[field.key], snapshot.entities)}</dd></div>)}</dl><div className="toolbar"><button onClick={openEdit}>Edit draft</button>{available.map(item => <button className="primary" key={item.key} onClick={() => openOperation(item.key)}>{item.label}</button>)}</div><Linked entity={selected} snapshot={snapshot}/><History entity={selected} snapshot={snapshot}/></> : <p className="empty">Choose a record to inspect it.</p>}</div></section>
       </main></div>
-    {dialog && <dialog ref={modalRef} aria-labelledby="command-title" onCancel={() => setDialog(null)}><form className="modal" onSubmit={submit}><div><h2 id="command-title">{dialog === 'operate' ? product.operations.find(item => item.key === operation)?.label : dialog === 'create' ? 'Create record' : 'Edit draft'}</h2><button type="button" aria-label="Close dialog" onClick={() => setDialog(null)}>×</button></div>{dialog !== 'operate' && <label>Record title<input required maxLength={200} value={title} onChange={event => setTitle(event.target.value)}/></label>}{formFields.map(field => <Editor key={field.key} field={field} value={values[field.key]} entities={snapshot.entities} onChange={value => setValues(current => ({ ...current, [field.key]: value }))}/>)}{commandError && <p role="alert">{commandError}</p>}<button type="button" onClick={() => { const latest = repository.read(); setSnapshot(latest); setCommandRevision(latest.revision); setCommandError(''); }}>Refresh records and retain input</button><button className="primary" type="submit">Save command</button></form></dialog>}
+    {dialog && <dialog ref={modalRef} aria-labelledby="command-title" onCancel={cancelCommand}><form className="modal" onSubmit={submit}><div><h2 id="command-title">{dialog === 'operate' ? product.operations.find(item => item.key === operation)?.label : dialog === 'create' ? 'Create record' : 'Edit draft'}</h2><button type="button" aria-label="Close dialog" onClick={cancelCommand}>×</button></div>{dialog !== 'operate' && <label>Record title<input required maxLength={200} value={title} onChange={event => setTitle(event.target.value)}/></label>}{formFields.map(field => <Editor key={field.key} field={field} value={values[field.key]} entities={snapshot.entities} onChange={value => setValues(current => ({ ...current, [field.key]: value }))}/>)}{commandError && <p role="alert">{commandError}</p>}{departureLoadingFailure && <><p>Reload the departure workflow while preserving this command's date, evidence, reason, actor and source revision.</p><button type="button" onClick={reloadDepartureCommand}>Reload departure workflow and retain input</button></>}<button type="button" onClick={() => { const latest = repository.read(); setSnapshot(latest); setCommandRevision(latest.revision); setCommandError(''); }}>Refresh records and retain input</button><button className="primary" type="submit">Save command</button></form></dialog>}
   </div>;
 }
 function display(value: Value | undefined, entities: Entity[]) {

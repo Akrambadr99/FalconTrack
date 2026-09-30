@@ -226,3 +226,47 @@ test('amended stay dates require renewed team evidence before correctly priced a
   const charges = await page.evaluate(() => { const storage = (globalThis as unknown as { localStorage: { getItem(key: string): string | null } }).localStorage; const raw = storage.getItem('staypilot:workspace:v1'); const saved = raw ? JSON.parse(raw) as { entities: { id: string; fields: Record<string, string | number> }[] } : null; return saved?.entities.find((item) => item.id === 'folio-5812')?.fields['charges']; });
   expect(charges).toBe(45000);
 });
+
+
+test('independent early departure credits booked nights before financial settlement and housekeeping checkout', async ({ page }) => {
+  await page.clock.setFixedTime(new Date('2026-09-13T12:00:00Z')); await page.goto('/operations');
+  const actor = page.getByRole('combobox', { name: 'Current actor' });
+  const action = async (name: string) => page.getByRole('button', { name, exact: true }).click();
+  const save = async () => { await action('Save command'); await expect(page.getByRole('dialog')).toHaveCount(0); };
+  await actor.selectOption('actor-1'); await page.getByRole('button', { name: /^Guest reservations/ }).click(); await action('Check in guest'); await save();
+  await action('Request early departure review'); const requestDialog = page.getByRole('dialog');
+  await requestDialog.getByLabel('Earlier departure date').fill('2026-09-14');
+  await requestDialog.getByRole('textbox', { name: 'Guest departure evidence', exact: true }).fill('GUEST-EARLY-001');
+  await requestDialog.getByRole('textbox', { name: 'Early departure rationale', exact: true }).fill('Guest confirmed earlier travel after an airline schedule change.');
+  await page.route('**/src/occupancy/departure-amendments.ts*', async (route) => { await route.abort('failed'); });
+  await action('Save command'); await expect(page.getByRole('alert')).toContainText('Departure failed to load');
+  await expect(requestDialog.getByRole('textbox', { name: 'Guest departure evidence', exact: true })).toHaveValue('GUEST-EARLY-001');
+  const failedStorage = await page.context().storageState(), failedRaw = failedStorage.origins.flatMap((origin) => origin.localStorage).find((item) => item.name === 'staypilot:workspace:v1')?.value;
+  expect((JSON.parse(failedRaw ?? '{}') as { entities: { kind: string }[] }).entities.some((item) => item.kind === 'departure-amendment')).toBe(false);
+  await page.unroute('**/src/occupancy/departure-amendments.ts*');
+  await page.getByRole('button', { name: 'Reload departure workflow and retain input' }).click();
+  await expect(page.getByRole('dialog', { name: 'Request early departure review' })).toBeVisible();
+  await expect(page.getByRole('dialog').getByLabel('Earlier departure date')).toHaveValue('2026-09-14');
+  await expect(page.getByRole('dialog').getByRole('textbox', { name: 'Guest departure evidence', exact: true })).toHaveValue('GUEST-EARLY-001');
+  await expect(actor).toHaveValue('actor-1'); await expect(page.getByRole('status')).toContainText('Departure draft restored');
+  await save();
+  await expect(page.locator('.detail')).toContainText('2026-09-15');
+  await action('Check out and queue clean'); await action('Save command'); await expect(page.getByRole('alert')).toContainText('pending early-departure');
+  await page.getByRole('button', { name: 'Close dialog' }).click();
+  await page.getByRole('button', { name: /^Early departure reviews/ }).click(); await expect(page.locator('.detail')).toContainText('15,000');
+  await expect(page.getByRole('button', { name: 'Approve early departure and credit', exact: true })).toHaveCount(0);
+  await actor.selectOption('actor-0'); await action('Approve early departure and credit');
+  await page.getByRole('dialog').getByRole('textbox', { name: 'Early departure rationale', exact: true }).fill('Independently verified booked-night credit with no collected-payment refund.'); await save();
+  await expect(page.locator('.detail')).toContainText('approved'); await page.reload();
+  await page.getByRole('button', { name: /^Guest reservations/ }).click(); await expect(page.locator('.detail')).toContainText('2026-09-14'); await expect(page.locator('.detail')).toContainText('checked-in');
+  await page.getByRole('button', { name: /^Guest folios/ }).click(); await action('Post folio payment');
+  await page.getByRole('dialog').getByLabel('Payment (cents)').fill('30000'); await save();
+  await page.getByRole('button', { name: /^Guest reservations/ }).click(); await action('Check out and queue clean'); await save();
+  await expect(page.locator('.detail')).toContainText('checked-out');
+  await page.getByRole('button', { name: /^Housekeeping tasks/ }).click(); await expect(page.locator('.detail')).toContainText('Checkout clean');
+  const storage = await page.context().storageState(), raw = storage.origins.flatMap((origin) => origin.localStorage).find((item) => item.name === 'staypilot:workspace:v1')?.value;
+  const workspace = JSON.parse(raw ?? '{}') as { entities: { kind: string; id: string; status: string; fields: Record<string, string | number> }[] };
+  expect(workspace.entities.find((item) => item.kind === 'folio' && item.fields['stay'] === 'stay-1')?.fields['charges']).toBe(30000);
+  expect(workspace.entities.find((item) => item.id === 'room-1')?.status).toBe('dirty');
+  expect(workspace.entities.find((item) => item.kind === 'departure-amendment')?.fields['decisionActor']).toBe('actor-0');
+});

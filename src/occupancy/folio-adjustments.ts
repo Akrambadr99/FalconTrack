@@ -65,3 +65,49 @@ export const folioAdjustmentOperations: Operation[] = [
         },
     },
 ];
+
+
+const departureField = (key: string, label: string, type: Field['type'], required = true): Field => ({ key, label, type, required });
+const departureReason = departureField('reason', 'Early departure rationale', 'text');
+const departureEvidence = departureField('reference', 'Guest departure evidence', 'text');
+export const departureAmendmentKind: Kind = {
+    key: 'departure-amendment', label: 'Early departure reviews', initial: 'requested', editors: [],
+    states: ['requested', 'approved', 'rejected', 'cancelled'],
+    fields: [
+        ...([['stay', 'Guest stay'], ['folio', 'Guest folio'], ['room', 'Occupied room']] as const).map(([key, label]): Field => ({ ...departureField(key, label, 'reference'), reference: key })),
+        ...['stayVersion', 'folioVersion', 'roomVersion'].map((key): Field => ({ ...departureField(key, key, 'number'), min: 1, integer: true })),
+        departureField('previousDeparture', 'Previous departure', 'date'),
+        departureField('departure', 'Requested departure', 'date'),
+        { ...departureField('credit', 'Unused night credit (cents)', 'number'), min: 1, integer: true },
+        departureField('requester', 'Requesting desk agent', 'text'),
+        departureEvidence, departureReason,
+        departureField('decisionActor', 'Decision actor', 'text', false),
+        departureField('decisionReason', 'Decision rationale', 'text', false),
+        departureField('decidedOn', 'Decision timestamp', 'text', false),
+    ],
+};
+let loadedDepartureExecution: Record<string, (context: Context) => string> | undefined;
+function executeLoadedDeparture(key: string, context: Context) {
+    const run = loadedDepartureExecution?.[key];
+    requireThat(run, 'Departure command is not loaded. Retry.');
+    return run(context);
+}
+/** Only departure commands load their execution code; discovery and saved record validation remain synchronous. */
+export async function prepareDepartureOperation(operation: string) {
+    if (!operation.startsWith('departure-') || loadedDepartureExecution) return;
+    try { loadedDepartureExecution = (await import('./departure-amendments')).departureExecution; }
+    catch { throw new Error('Departure failed to load.', { cause: 'departure-load' }); }
+}
+function departureDecisionOperation(key: string, label: string, role = 'Duty Manager'): Operation {
+    return { key, label, kind: 'departure-amendment', from: ['requested'], roles: [role], fields: [departureReason], run: (context) => executeLoadedDeparture(key, context) };
+}
+export const departureAmendmentOperations: Operation[] = [
+    {
+        key: 'departure-request', label: 'Request early departure review', kind: 'stay', from: ['checked-in'], roles: ['Front Desk'],
+        fields: [departureField('departure', 'Earlier departure date', 'date'), departureEvidence, departureReason],
+        run: (context) => executeLoadedDeparture('departure-request', context),
+    },
+    departureDecisionOperation('departure-approve', 'Approve early departure and credit'),
+    departureDecisionOperation('departure-reject', 'Reject early departure'),
+    departureDecisionOperation('departure-cancel', 'Cancel early departure request', 'Front Desk'),
+];
