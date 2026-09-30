@@ -52,6 +52,13 @@ export class StayWorkspaceRecovery {
     if (current.revision !== expectedRevision) reasons.push('Workspace changed after preview. Refresh before restoring.')
     if (snapshot.sourceRevision !== current.revision) reasons.push('Snapshot is older than the current workspace revision; newer operations cannot be overwritten.')
     if (current.audit.some((event) => !snapshot.workspace.audit.some((saved) => saved.id === event.id))) reasons.push('Snapshot omits current audit history.')
+    if (current.audit.some((event) => snapshot.workspace.audit.some((saved) => saved.id === event.id && JSON.stringify(saved) !== JSON.stringify(event)))) reasons.push('Snapshot changes an existing audit event. Original actor, timestamp, and evidence must be preserved.')
+    if (current.receipts.some((receipt) => !snapshot.workspace.receipts.some((saved) => saved.id === receipt.id && saved.fingerprint === receipt.fingerprint))) reasons.push('Snapshot omits or changes an applied command receipt. Restore must preserve duplicate-command protection.')
+    if (current.arrivalControl) {
+      for (const key of ['interventions', 'evidence', 'invalidations', 'sourceRevisions', 'releases'] as const) {
+        if (current.arrivalControl[key].some((event) => !snapshot.workspace.arrivalControl?.[key].some((saved) => saved.id === event.id && JSON.stringify(saved) === JSON.stringify(event)))) reasons.push(`Snapshot omits or changes recorded arrival ${key}. Preserve the original arrival evidence before restoring.`)
+      }
+    }
     if (current.audit.some((event) => event.id === `snapshot-restore:${snapshot.id}`)) reasons.push('Snapshot was already restored.')
     return { ready: reasons.length === 0, reasons, snapshotId: snapshot.id, sourceRevision: snapshot.sourceRevision, currentRevision: current.revision, records: snapshot.workspace.entities.length, arrivalEvents: snapshot.workspace.arrivalControl?.evidence.length ?? 0 }
   }

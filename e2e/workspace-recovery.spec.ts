@@ -14,4 +14,15 @@ test('duty manager captures and restores one verified guest workspace snapshot',
   await expect(page.getByLabel('Workspace recovery preview')).toContainText('restore blocked')
   await page.reload()
   await expect(page.getByText('1', { exact: true }).first()).toBeVisible()
+  await capture.click()
+  const href = await page.getByRole('link', { name: 'Download workspace snapshot' }).getAttribute('href')
+  if (!href) throw new Error('Captured snapshot missing')
+  const saved = decodeURIComponent(href.slice(href.indexOf(',') + 1))
+  const altered = JSON.parse(saved) as { workspace: { audit: { actor: string }[] } }
+  for (const event of altered.workspace.audit) event.actor = 'Altered actor'
+  await page.getByLabel('Load workspace snapshot').setInputFiles({ name: 'altered.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(altered)) })
+  await expect(page.getByRole('alert').filter({ hasText: 'changes an existing audit event' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Restore verified workspace snapshot' })).toBeDisabled()
+  await page.getByLabel('Load workspace snapshot').setInputFiles({ name: 'original.json', mimeType: 'application/json', buffer: Buffer.from(saved) })
+  await expect(page.getByRole('button', { name: 'Restore verified workspace snapshot' })).toBeEnabled()
 })
