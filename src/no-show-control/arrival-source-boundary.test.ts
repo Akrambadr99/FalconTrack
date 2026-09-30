@@ -305,3 +305,60 @@ it('rejects direct check-in bypass and missing authoritative folio after explici
   storage.setItem(workspace.key, JSON.stringify(current));
   expect(() => arrival.read()).toThrow('exactly one authoritative folio');
 });
+
+const dateAmendment = { id: 'extend-5812', role: 'Duty Manager', reservationId: 'RES-5812', arrival: '2026-10-20', departure: '2026-10-23', reason: 'Guest requested one additional room night before independent arrival release.', evidenceReference: 'GUEST-EXTENSION-5812', amendedBy: 'Duty manager north', amendedOn: '2026-10-20T14:40:00Z' };
+function verifyTeams(repository: AuthoritativeArrivalRepository, prefix: string) {
+  for (const kind of ['reservation-check', 'folio-clearance', 'room-inspection', 'occupancy-check', 'manager-review'] as const) {
+    const current = repository.read();
+    const role = kind === 'room-inspection' ? 'Housekeeping Coordinator' : kind === 'manager-review' ? 'Duty Manager' : 'Front Desk Agent';
+    repository.dispatch({ id: prefix + kind, expectedRevision: current.revision, expectedWorkspaceRevision: current.workspaceRevision, role, reservationId: 'RES-5812', kind, actor: role, evidenceReference: prefix + kind, recordedOn: '2026-10-20T14:30:00Z' });
+  }
+}
+it('amends owning stay dates atomically and invalidates only date-dependent arrival evidence', async () => {
+  const { arrival, workspace } = setup(); escalate(arrival); verifyTeams(arrival, 'original-');
+  const before = arrival.read(), sourceBefore = workspace.read();
+  const amended = await arrival.amendDatesCoordinated({ ...dateAmendment, expectedRevision: before.revision, expectedWorkspaceRevision: before.workspaceRevision });
+  const owning = workspace.read();
+  expect(owning.entities.find((item) => item.id === 'stay-5812')?.fields['departure']).toBe('2026-10-23');
+  expect(owning.entities.find((item) => item.id === 'folio-5812')).toEqual(sourceBefore.entities.find((item) => item.id === 'folio-5812'));
+  expect(owning.entities.find((item) => item.id === 'ROOM-824')).toEqual(sourceBefore.entities.find((item) => item.id === 'ROOM-824'));
+  expect(amended.evidence).toEqual(before.evidence);
+  expect(amended.invalidations.map((item) => item.kind)).toEqual(['reservation-check', 'occupancy-check', 'manager-review']);
+  expect(explainArrivalReadiness(amended, 'RES-5812')?.missingEvidence).toEqual(['reservation-check', 'occupancy-check', 'manager-review']);
+  expect(amended.dateAmendments[0]).toMatchObject({ sourceStayRevision: sourceBefore.entities.find((item) => item.id === 'stay-5812')?.revision, previousDeparture: '2026-10-22', departure: '2026-10-23', immutable: true });
+  expect(arrivalRoomAvailability(owning, 'ROOM-824')).toEqual([]);
+  expect(owning.entities.find((item) => item.id === 'stay-1')).toEqual(sourceBefore.entities.find((item) => item.id === 'stay-1'));
+  for (const kind of ['reservation-check', 'occupancy-check', 'manager-review'] as const) {
+    const current = arrival.read(); arrival.dispatch({ id: 'renewed-' + kind, expectedRevision: current.revision, expectedWorkspaceRevision: current.workspaceRevision, role: kind === 'manager-review' ? 'Duty Manager' : 'Front Desk Agent', reservationId: 'RES-5812', kind, actor: 'Independent team', evidenceReference: 'renewed-' + kind, recordedOn: '2026-10-20T14:42:00Z' });
+  }
+  const ready = arrival.read();
+  arrival.dispatch({ id: 'amended-release', expectedRevision: ready.revision, expectedWorkspaceRevision: ready.workspaceRevision, role: 'Duty Manager', reservationId: 'RES-5812', frontDeskAcknowledgement: 'original-reservation-check', housekeepingAcknowledgement: 'original-room-inspection', replacementRoom: 'ROOM-824', originalRoomDisposition: 'ROOM-512 remains blocked', folioClearanceReference: 'original-folio-clearance', occupancyReference: 'renewed-occupancy-check', noShowAuditReference: 'NOSHOW-5812', releasedBy: 'Duty manager north', releasedOn: '2026-10-20T14:45:00Z' });
+  expect(workspace.read().entities.find((item) => item.id === 'folio-5812')?.fields['charges']).toBe(45000);
+  await expect(arrival.amendDatesCoordinated({ ...dateAmendment, id: 'too-late', expectedRevision: arrival.read().revision, expectedWorkspaceRevision: arrival.read().workspaceRevision })).rejects.toThrow('unreleased');
+});
+it('rejects a new date overlap without partially writing reservation history or financial records', async () => {
+  const { arrival, workspace, storage, values } = setup(); escalate(arrival);
+  const saved = workspace.read(); saved.entities.push({ id: 'other-reservation', kind: 'stay', title: 'Different guest', status: 'reserved', revision: 1, fields: { room: 'ROOM-824', guest: 'Different guest', arrival: '2026-10-22', departure: '2026-10-24' } }); saved.revision += 1; storage.setItem(workspace.key, JSON.stringify(saved));
+  const current = arrival.read(), before = values.get(workspace.key);
+  await expect(arrival.amendDatesCoordinated({ ...dateAmendment, expectedRevision: current.revision, expectedWorkspaceRevision: current.workspaceRevision })).rejects.toThrow('other-reservation overlaps');
+  expect(values.get(workspace.key)).toBe(before); expect(arrival.read().dateAmendments).toEqual([]);
+});
+it('guards date amendments against stale revisions invalid dates and incorrect authority', async () => {
+  const { arrival, workspace, values } = setup(); escalate(arrival); const current = arrival.read(), before = values.get(workspace.key);
+  const command = { ...dateAmendment, expectedRevision: current.revision, expectedWorkspaceRevision: current.workspaceRevision };
+  await expect(arrival.amendDatesCoordinated({ ...command, role: 'Front Desk Agent' })).rejects.toThrow('duty manager');
+  await expect(arrival.amendDatesCoordinated({ ...command, expectedWorkspaceRevision: 0 })).rejects.toThrow('Refresh');
+  for (const dates of [{ arrival: '2026-10-19' }, { departure: '2026-02-30' }, { departure: '2026-10-20' }]) await expect(arrival.amendDatesCoordinated({ ...command, ...dates })).rejects.toThrow('valid stay dates');
+  for (const amendedOn of ['2026-10-20T14:40:00+01:00', '2026-10-20T13:40:00-01:00']) await expect(arrival.amendDatesCoordinated({ ...command, amendedOn })).rejects.toThrow('valid stay dates');
+  expect(values.get(workspace.key)).toBe(before);
+});
+it('replays only the same date amendment and rejects pre-amendment evidence while retaining legacy state', async () => {
+  const { arrival } = setup(); escalate(arrival); const current = arrival.read();
+  const command = { ...dateAmendment, expectedRevision: current.revision, expectedWorkspaceRevision: current.workspaceRevision };
+  const amended = await arrival.amendDatesCoordinated(command);
+  expect((await arrival.amendDatesCoordinated(command)).dateAmendments).toEqual(amended.dateAmendments);
+  await expect(arrival.amendDatesCoordinated({ ...command, departure: '2026-10-24' })).rejects.toThrow('different change');
+  expect(() => arrival.dispatch({ id: 'old-date-evidence', expectedRevision: amended.revision, expectedWorkspaceRevision: amended.workspaceRevision, role: 'Front Desk Agent', reservationId: 'RES-5812', kind: 'reservation-check', actor: 'Front desk', evidenceReference: 'OLD', recordedOn: '2026-10-20T14:30:00Z' })).toThrow('predate');
+  const legacy = new BrowserArrivalPersistence({ getItem: () => JSON.stringify({ ...initialArrivalPortfolioState, dateAmendments: undefined }), setItem: () => undefined }).load();
+  expect(legacy?.dateAmendments).toEqual([]);
+});

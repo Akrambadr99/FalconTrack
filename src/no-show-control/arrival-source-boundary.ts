@@ -71,7 +71,7 @@ export function authoritativeArrivalSource(snapshot: Snapshot, selectedReservati
     reservationId: selectedReservationId,
     stayId: stay.id,
     folioId: folio.id,
-    reservation: { version: stay.revision, assignedRoomId: roomId },
+    reservation: { version: stay.revision, assignedRoomId: roomId, arrival: String(stay.fields['arrival']), departure: String(stay.fields['departure']) },
     rooms: snapshot.entities.filter((item) => item.kind === 'room').map((room) => ({
       id: room.id,
       version: room.revision,
@@ -140,6 +140,7 @@ export class AuthoritativeArrivalRepository {
     const embedded = (workspace as ArrivalWorkspace).arrivalControl;
     const saved = embedded ?? this.legacy.load() ?? structuredClone(initialArrivalPortfolioState);
     const arrival = structuredClone(saved);
+    arrival.dateAmendments = (saved as Partial<ArrivalPortfolioState>).dateAmendments ?? [];
     const source = authoritativeArrivalSource(workspace);
     const seeded = arrival.arrivals.find((item) => item.reservationId === reservationId);
     if (seeded?.guestName !== String(entity(workspace, stayId, 'stay').fields['guest'])) throw new Error('Legacy arrival cannot be linked to the authoritative RES-5812 guest. Its history is preserved for review.');
@@ -191,6 +192,50 @@ export class AuthoritativeArrivalRepository {
       return this.read();
     });
   }
+  async amendDatesCoordinated(command: { id: string; expectedRevision: number; expectedWorkspaceRevision?: number | undefined; role: string; reservationId: string; arrival: string; departure: string; reason: string; evidenceReference: string; amendedBy: string; amendedOn: string }): Promise<ArrivalPortfolioState> {
+    return coordinateWorkspaceWrite(this.workspace.key, () => {
+      const { workspace, arrival } = this.bundle();
+      const fingerprint = JSON.stringify(Object.fromEntries(Object.entries(command).filter(([key]) => key !== 'expectedRevision' && key !== 'expectedWorkspaceRevision').sort(([left], [right]) => left.localeCompare(right))));
+      const receipt = workspace.receipts.find((item) => item.id === command.id);
+      if (receipt) { if (receipt.fingerprint !== fingerprint) throw new Error('Amendment identity already records a different change.'); return arrival; }
+      if (command.role !== 'Duty Manager') throw new Error('Only the duty manager can authorize arrival date amendments.');
+      if (command.expectedRevision !== arrival.revision || command.expectedWorkspaceRevision !== workspace.revision) throw new Error('Arrival or authoritative workspace changed. Refresh before amending dates.');
+      if (arrival.unresolvedSource) throw new Error(arrival.unresolvedSource);
+      const source = authoritativeArrivalSource(workspace, command.reservationId);
+      const stay = entity(workspace, source.stayId ?? '', 'stay');
+      const folio = entity(workspace, source.folioId ?? '', 'folio');
+      const record = arrival.arrivals.find((item) => item.reservationId === command.reservationId);
+      if (!record || stay.status !== 'reserved' || folio.status !== 'open' || arrival.releases.some((item) => item.reservationId === command.reservationId)) throw new Error('Only an explicitly registered, unreleased reserved stay can amend arrival dates.');
+      const validDate = (value: string) => /^20\d{2}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
+      const validTimestamp = (value: string) => /^20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().replace('.000Z', 'Z') === value;
+      const day = command.amendedOn.slice(0, 10);
+      const latest = arrival.dateAmendments.filter((item) => item.reservationId === command.reservationId).at(-1);
+      const evidenceDate = arrival.evidence.filter((item) => item.reservationId === command.reservationId).map((item) => item.recordedOn).sort().at(-1);
+      if (!command.id.trim() || !command.amendedBy.trim() || !command.evidenceReference.trim() || command.reason.trim().length < 20 || !validTimestamp(command.amendedOn) || !validDate(day) || !validDate(command.arrival) || !validDate(command.departure) || command.arrival < day || command.departure <= command.arrival || (latest && command.amendedOn < latest.amendedOn) || (evidenceDate && command.amendedOn < evidenceDate)) throw new Error('Current or future valid stay dates, actor, amendment evidence and a specific reason are required.');
+      const previousArrival = String(stay.fields['arrival']), previousDeparture = String(stay.fields['departure']);
+      if (previousArrival === command.arrival && previousDeparture === command.departure) throw new Error('Amendment must change the authoritative stay dates.');
+      const next = structuredClone(workspace), target = entity(next, stay.id, 'stay');
+      target.fields['arrival'] = command.arrival; target.fields['departure'] = command.departure; target.revision += 1;
+      const blockers = arrivalRoomAvailability(next, String(target.fields['room']), command.reservationId);
+      if (blockers.length) throw new Error('Amended stay conflicts with authoritative room obligations. ' + blockers.join(' '));
+      validateSnapshot(next, product);
+      const nextArrival = structuredClone(arrival);
+      const changedArrival = nextArrival.arrivals.find((item) => item.reservationId === command.reservationId);
+      if (!changedArrival) throw new Error('Arrival disappeared during date amendment.');
+      changedArrival.expectedAt = command.arrival + record.expectedAt.slice(10);
+      const affected = arrival.evidence.filter((item) => item.reservationId === command.reservationId && ['reservation-check', 'occupancy-check', 'manager-review'].includes(item.kind) && !arrival.invalidations.some((invalidation) => invalidation.evidenceId === item.id));
+      nextArrival.dateAmendments.push({ ...command, stayId: stay.id, sourceStayRevision: stay.revision, previousArrival, previousDeparture, reason: command.reason.trim(), evidenceReference: command.evidenceReference.trim(), amendedBy: command.amendedBy.trim(), invalidatedEvidenceIds: affected.map((item) => item.id), immutable: true });
+      for (const evidence of affected) nextArrival.invalidations.push({ id: command.id + ':' + evidence.id, reservationId: command.reservationId, evidenceId: evidence.id, kind: evidence.kind, team: evidence.team, actor: evidence.actor, sourceRevision: evidence.sourceRevision, invalidatedByInterventionId: evidence.interventionId, change: 'Stay dates amended: ' + command.reason.trim(), invalidatedOn: command.amendedOn, replacementRequired: true, immutable: true });
+      next.revision += 1; nextArrival.revision += 1; nextArrival.workspaceRevision = next.revision;
+      const { operationalSources: _sources, ...history } = nextArrival; void _sources;
+      (next as ArrivalWorkspace).arrivalControl = { ...history, operationalSources: [] };
+      next.audit.push({ id: command.id, at: command.amendedOn, actor: command.amendedBy.trim(), action: 'arrival-date-amendment', entityIds: [stay.id, source.folioId ?? '', String(stay.fields['room'])], summary: command.reservationId + ' dates ' + previousArrival + '/' + previousDeparture + ' → ' + command.arrival + '/' + command.departure + '; ' + command.evidenceReference.trim() });
+      next.receipts.push({ id: command.id, fingerprint });
+      if (this.workspace.read().revision !== workspace.revision) throw new Error('Another client changed the owning stay before amendment was saved. Refresh and retry.');
+      this.storage.setItem(this.workspace.key, JSON.stringify(next));
+      return this.read();
+    });
+  }
   read(): ArrivalPortfolioState { return this.bundle().arrival; }
   async dispatchCoordinated(command: ArrivalCommand): Promise<ArrivalPortfolioState> {
     return coordinateWorkspaceWrite(this.workspace.key, () => this.dispatch(command));
@@ -211,6 +256,9 @@ export class AuthoritativeArrivalRepository {
     if (owningStay.status !== 'reserved') throw new Error('Only an active reserved stay accepts arrival preparation or evidence.');
     if (arrival.unresolvedSource) throw new Error(arrival.unresolvedSource);
     if (command.expectedWorkspaceRevision !== workspace.revision) throw new Error('Authoritative reservation, room or folio changed. Refresh before continuing.');
+    const latestDateAmendment = arrival.dateAmendments.filter((item) => item.reservationId === command.reservationId).at(-1);
+    const activityOn = 'recordedOn' in command ? command.recordedOn : 'releasedOn' in command ? command.releasedOn : null;
+    if (latestDateAmendment && activityOn && (!/^20\d{2}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(activityOn) || !Number.isFinite(Date.parse(activityOn)) || activityOn < latestDateAmendment.amendedOn)) throw new Error('New verification or release cannot predate the active stay date amendment.');
     if ('replacementRoom' in command) {
       const candidate = source.rooms.find((room) => room.id === command.replacementRoom);
       if (!candidate) throw new Error('Replacement room is missing from authoritative inventory.');

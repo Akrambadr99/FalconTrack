@@ -204,3 +204,25 @@ test('registers a second actual arrival and completes its scoped authoritative t
   expect(financial?.find((item) => item.id === 'RES-5824:folio')?.fields['charges']).toBe(30000);
   expect(financial?.find((item) => item.id === 'stay-5812')?.status).toBe('reserved');
 });
+
+test('amended stay dates require renewed team evidence before correctly priced arrival release', async ({ page }) => {
+  await page.goto('/no-show-control'); const role = page.getByRole('combobox', { name: 'Arrival control role', exact: true });
+  await role.selectOption('Duty Manager'); await page.getByRole('button', { name: 'Approve replacement and escalate arrival' }).click();
+  await verifyRecoveredArrival(page);
+  await page.getByText('Amend registered stay dates', { exact: true }).click();
+  await page.getByLabel('Amended departure date').fill('2026-10-23');
+  await page.getByRole('textbox', { name: 'Date amendment reason', exact: true }).fill('Guest confirmed one extra night before authoritative arrival release.');
+  await page.getByRole('textbox', { name: 'Date amendment evidence', exact: true }).fill('GUEST-EXTENSION-5812');
+  await page.getByRole('button', { name: 'Authorize stay date amendment' }).click();
+  await expect(page.getByRole('list', { name: 'Invalidated arrival evidence' })).toContainText('occupancy-check');
+  await expect(page.getByRole('list', { name: 'Independent arrival evidence' }).locator('li')).toHaveCount(5);
+  await expect(page.getByRole('button', { name: 'Release arrival after final reconciliation' })).toBeDisabled();
+  for (const actor of ['Front Desk Agent', 'Front Desk Agent', 'Duty Manager']) { await role.selectOption(actor); await page.getByRole('button', { name: 'Record next team evidence' }).click(); await expect(page.getByRole('status')).toContainText('recorded independently'); }
+  await page.getByRole('button', { name: 'Release arrival after final reconciliation' }).click();
+  await expect(page.getByLabel('Arrival authoritative records')).toContainText('checked-in');
+  await page.reload(); await page.getByText('Amend registered stay dates', { exact: true }).click();
+  await expect(page.getByRole('list', { name: 'Stay date amendment history' })).toContainText('GUEST-EXTENSION-5812');
+  await expect(page.getByRole('button', { name: 'Authorize stay date amendment' })).toBeDisabled();
+  const charges = await page.evaluate(() => { const storage = (globalThis as unknown as { localStorage: { getItem(key: string): string | null } }).localStorage; const raw = storage.getItem('staypilot:workspace:v1'); const saved = raw ? JSON.parse(raw) as { entities: { id: string; fields: Record<string, string | number> }[] } : null; return saved?.entities.find((item) => item.id === 'folio-5812')?.fields['charges']; });
+  expect(charges).toBe(45000);
+});

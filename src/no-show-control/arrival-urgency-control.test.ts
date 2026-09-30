@@ -141,3 +141,22 @@ it('preserves registration input on failure and scopes prepared arrival history 
   expect(screen.getByLabelText('Arrival authoritative records')).toHaveTextContent('stay-5812')
   cleanup(); localStorage.clear()
 })
+
+it('keeps rejected date-amendment input and exposes the owning stay change after a valid retry', async () => {
+  cleanup(); localStorage.clear(); const user = userEvent.setup(); render(createElement(ArrivalUrgencyControl));
+  await user.selectOptions(screen.getByLabelText('Arrival control role'), 'Duty Manager');
+  await user.click(screen.getByRole('button', { name: 'Approve replacement and escalate arrival' }));
+  await user.click(screen.getByText('Amend registered stay dates'));
+  const departure = screen.getByLabelText('Amended departure date');
+  await user.clear(departure); await user.type(departure, '2026-10-20');
+  await user.type(screen.getByLabelText('Date amendment reason'), 'Guest requested another overnight stay before check-in.');
+  await user.type(screen.getByLabelText('Date amendment evidence'), 'GUEST-CONFIRM-5812');
+  await user.click(screen.getByRole('button', { name: 'Authorize stay date amendment' }));
+  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('valid stay dates'));
+  expect(screen.getByLabelText('Date amendment evidence')).toHaveValue('GUEST-CONFIRM-5812');
+  await user.clear(departure); await user.type(departure, '2026-10-23');
+  await user.click(screen.getByRole('button', { name: 'Authorize stay date amendment' }));
+  await waitFor(() => expect(screen.getByRole('list', { name: 'Stay date amendment history' })).toHaveTextContent('2026-10-23'));
+  expect(new Repository(product, localStorage).read().entities.find((item) => item.id === 'stay-5812')?.fields['departure']).toBe('2026-10-23');
+  cleanup(); localStorage.clear();
+});
