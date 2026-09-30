@@ -1,3 +1,9 @@
+import { createElement } from 'react'
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { product } from '../product/definition'
+import { Repository } from '../workspace/repository'
+import { ArrivalUrgencyControl } from './ArrivalUrgencyControl'
 import { describe, expect, it } from 'vitest'
 import { ArrivalControlError, ArrivalPortfolioRepository, BrowserArrivalPersistence, arrivalCapabilities, escalateArrivalIntervention, explainArrivalReadiness, initialArrivalPortfolioState, queryArrivalInterventionHistory, queryArrivalReleaseLineage, recordArrivalEvidence, releaseOperationalArrival, reviseArrivalReplacement, reviseArrivalSource, type ArrivalEvidenceKind, type ArrivalPersistence, type ArrivalPortfolioState } from './arrival-control-domain'
 
@@ -76,4 +82,26 @@ describe('arrival operational source lineage', () => {
     const persistence = new BrowserArrivalPersistence({ getItem: (key) => store.get(key) ?? null, setItem: (key, value) => { store.set(key, value) } })
     expect(persistence.load()?.operationalSources).toHaveLength(initialArrivalPortfolioState.arrivals.length)
   })
+})
+it('focuses newly mounted failure feedback after an asynchronous authoritative arrival rejection', async () => {
+  const workspace = new Repository(product, localStorage)
+  const previous = localStorage.getItem(workspace.key)
+  try {
+    localStorage.removeItem(workspace.key)
+    workspace.commit({ id: 'focus-maintenance-824', expectedRevision: 0, actorId: 'actor-0', type: 'create', kind: 'block', title: 'Room 824 safety works', input: { room: 'ROOM-824', start: '2026-10-20', end: '2026-10-21', reason: 'Replace the corridor safety valve' } }, '2026-10-19T10:00:00Z')
+    const original = localStorage.getItem(workspace.key)
+    const user = userEvent.setup()
+    render(createElement(ArrivalUrgencyControl))
+    expect(screen.queryByRole('status')).toBeNull()
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Arrival control role' }), 'Duty Manager')
+    await user.click(screen.getByRole('button', { name: 'Approve replacement and escalate arrival' }))
+    const feedback = await screen.findByRole('status')
+    expect(feedback).toHaveTextContent('outstanding operational obligations')
+    await waitFor(() => { expect(feedback).toHaveFocus(); })
+    expect(localStorage.getItem(workspace.key)).toBe(original)
+    expect(screen.getByRole('list', { name: 'Arrival escalation history' })).toBeEmptyDOMElement()
+  } finally {
+    if (previous === null) localStorage.removeItem(workspace.key)
+    else localStorage.setItem(workspace.key, previous)
+  }
 })

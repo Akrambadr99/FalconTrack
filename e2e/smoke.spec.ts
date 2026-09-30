@@ -134,3 +134,40 @@ test('operations room edit makes a loaded arrival stale until its source is refr
 test('arrival transition blocks a stale operations command and preserves its input for retry',async({page})=>{await page.clock.setFixedTime(new Date('2026-09-12T10:00:00Z'));await page.goto('/operations');await page.getByRole('button',{name:/^Guest reservations/}).click();await page.getByRole('button',{name:'Check in guest',exact:true}).click();const arrival=await page.context().newPage();await arrival.goto('/no-show-control');await arrival.getByLabel('Arrival control role').selectOption('Duty Manager');await arrival.getByRole('button',{name:'Approve replacement and escalate arrival'}).click();await expect(arrival.getByRole('status')).toContainText('Replacement room approved');await page.getByRole('dialog').getByRole('button',{name:'Save command'}).click();await expect(page.getByRole('dialog').getByRole('alert')).toContainText('Refresh and review');await page.getByRole('dialog').getByRole('button',{name:'Refresh records and retain input'}).click();await page.getByRole('dialog').getByRole('button',{name:'Save command'}).click();await expect(page.getByRole('dialog')).toHaveCount(0);await arrival.reload();await expect(arrival.getByRole('list',{name:'Arrival escalation history'}).locator('li')).toHaveCount(1);await page.getByRole('button',{name:/^Guest reservations/}).click();await expect(page.locator('.detail-title')).toContainText('checked-in');await arrival.close();});
 
 test('a room draft opened before arrival cannot save against an auto-refreshed workspace',async({page})=>{await page.goto('/operations');await page.getByRole('button',{name:/^Room 824 /}).click();await page.getByRole('button',{name:'Edit draft'}).click();await page.getByRole('dialog').getByLabel('Nightly rate (cents)').fill('16000');const arrival=await page.context().newPage();await arrival.goto('/no-show-control');await arrival.getByLabel('Arrival control role').selectOption('Duty Manager');await arrival.getByRole('button',{name:'Approve replacement and escalate arrival'}).click();await expect(arrival.getByRole('status')).toContainText('Replacement room approved');await page.getByRole('dialog').getByRole('button',{name:'Save command'}).click();await expect(page.getByRole('dialog').getByRole('alert')).toContainText('Refresh and review');await expect(page.getByRole('dialog').getByLabel('Nightly rate (cents)')).toHaveValue('16000');await page.getByRole('dialog').getByRole('button',{name:'Refresh records and retain input'}).click();await page.getByRole('dialog').getByRole('button',{name:'Save command'}).click();await expect(page.getByRole('dialog')).toHaveCount(0);await page.reload();await page.getByRole('button',{name:/^Room 824 /}).click();await expect(page.locator('.detail dl')).toContainText('16,000');await arrival.reload();await expect(arrival.getByRole('list',{name:'Arrival escalation history'}).locator('li')).toHaveCount(1);await arrival.close();});
+
+test('arrival exposes maintenance obligations and recovers after their authoritative release', async ({ page }) => {
+  await page.goto('/operations');
+  await page.getByRole('button', { name: /^Maintenance blocks/ }).click();
+  await page.getByRole('button', { name: 'Create maintenance blocks' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Record title').fill('Room 824 safety works');
+  await dialog.getByRole('combobox', { name: 'Room', exact: true }).selectOption('ROOM-824');
+  await dialog.getByLabel('Start date').fill('2026-10-20');
+  await dialog.getByLabel('End date').fill('2026-10-21');
+  await dialog.getByLabel('Maintenance reason').fill('Replace the corridor safety valve');
+  await dialog.getByRole('button', { name: 'Save command' }).click();
+  await expect(dialog).toHaveCount(0);
+  await page.goto('/no-show-control');
+  await expect(page.getByRole('region', { name: 'Arrival room availability' })).toContainText('remains scheduled during this stay');
+  await page.getByLabel('Arrival control role').selectOption('Duty Manager');
+  await page.getByRole('button', { name: 'Approve replacement and escalate arrival' }).click();
+  await expect(page.getByRole('status')).toContainText('outstanding operational obligations');
+  await expect(page.getByRole('status')).toBeFocused();
+  await expect(page.getByRole('list', { name: 'Arrival escalation history' }).locator('li')).toHaveCount(0);
+  await page.goto('/operations');
+  await page.getByRole('button', { name: /^Maintenance blocks/ }).click();
+  await page.getByRole('button', { name: /^Room 824 safety works/ }).click();
+  await page.getByRole('button', { name: 'Release maintenance block', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Save command' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.goto('/no-show-control');
+  await expect(page.getByRole('region', { name: 'Arrival room availability' })).toContainText('No outstanding reservation, maintenance or housekeeping obligation');
+  await page.getByLabel('Arrival control role').selectOption('Duty Manager');
+  await page.getByRole('button', { name: 'Approve replacement and escalate arrival' }).click();
+  await expect(page.getByRole('status')).toContainText('Replacement room approved');
+  await verifyRecoveredArrival(page);
+  await page.getByRole('button', { name: 'Release arrival after final reconciliation' }).click();
+  await expect(page.getByRole('status')).toContainText('Arrival released');
+  await page.reload();
+  await expect(page.getByLabel('Arrival authoritative records')).toContainText('checked-in');
+});

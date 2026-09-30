@@ -1,6 +1,7 @@
 import { product } from '../product/definition';
 import { coordinateWorkspaceWrite, Repository, type StoragePort } from '../workspace/repository';
 import type { Entity, Snapshot } from '../workspace/types';
+import { overlaps } from '../workspace/values';
 import { validateSnapshot } from '../workspace/validation';
 import {
   ArrivalPortfolioRepository,
@@ -34,6 +35,23 @@ function migrateSourceRecords(snapshot: Snapshot): Snapshot {
   return next;
 }
 
+/** Physical readiness does not release calendar inventory or unfinished team work. */
+export function arrivalRoomAvailability(snapshot: Snapshot, roomId: string): string[] {
+  const stay = entity(snapshot, stayId, 'stay');
+  entity(snapshot, roomId, 'room');
+  const start = String(stay.fields['arrival']);
+  const end = String(stay.fields['departure']);
+  const blockers: string[] = [];
+  for (const other of snapshot.entities) {
+    if (other.kind === 'stay' && other.id !== stay.id && other.fields['room'] === roomId && ['reserved', 'checked-in'].includes(other.status)) {
+      const occupiedSince = typeof other.fields['roomSince'] === 'string' && other.fields['roomSince'] ? other.fields['roomSince'] : String(other.fields['arrival']);
+      if (overlaps(start, end, occupiedSince, String(other.fields['departure']))) blockers.push(`Reservation ${other.id} overlaps ${occupiedSince} to ${String(other.fields['departure'])}.`);
+    }
+    if (other.kind === 'block' && other.fields['room'] === roomId && other.status === 'scheduled' && overlaps(start, end, String(other.fields['start']), String(other.fields['end']))) blockers.push(`Maintenance ${other.id} remains scheduled during this stay: ${String(other.fields['reason'])}.`);
+    if (other.kind === 'task' && other.fields['room'] === roomId && other.status !== 'inspected') blockers.push(`Housekeeping ${other.id} remains ${other.status}; inspection is required.`);
+  }
+  return blockers;
+}
 export function authoritativeArrivalSource(snapshot: Snapshot): ArrivalOperationalSources {
   const stay = entity(snapshot, stayId, 'stay');
   const folio = entity(snapshot, folioId, 'folio');
@@ -57,6 +75,7 @@ export function authoritativeArrivalSource(snapshot: Snapshot): ArrivalOperation
       version: room.revision,
       status: room.status === 'ready' || room.status === 'occupied' ? 'ready' as const : 'blocked' as const,
       occupied: room.status === 'occupied',
+      availabilityBlockers: arrivalRoomAvailability(snapshot, room.id),
     })),
     folio: { version: folio.revision, blocker: folio.fields['arrivalBlocker'] === 'yes', clearanceReference: typeof folio.fields['arrivalClearance'] === 'string' ? folio.fields['arrivalClearance'] : null },
   };
@@ -145,6 +164,7 @@ export class AuthoritativeArrivalRepository {
       const candidate = source.rooms.find((room) => room.id === command.replacementRoom);
       if (!candidate) throw new Error('Replacement room is missing from authoritative inventory.');
       if (candidate.status !== 'ready' || candidate.occupied) throw new Error('Replacement room is not ready and vacant.');
+      if (candidate.availabilityBlockers?.length) throw new Error('Replacement room has outstanding operational obligations. ' + candidate.availabilityBlockers.join(' '));
     }
     if ('occupancyReference' in command) {
       const stay = entity(workspace, stayId, 'stay');

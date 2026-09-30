@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { product } from '../product/definition';
 import { fresh } from '../workspace/engine';
 import { Repository } from '../workspace/repository';
-import { AuthoritativeArrivalRepository, authoritativeArrivalSource } from './arrival-source-boundary';
+import { AuthoritativeArrivalRepository, authoritativeArrivalSource, arrivalRoomAvailability } from './arrival-source-boundary';
 import { BrowserArrivalPersistence, explainArrivalReadiness, initialArrivalPortfolioState } from './arrival-control-domain';
 
 function setup() {
@@ -174,4 +174,78 @@ describe('authoritative arrival source boundary', () => {
     expect(() => escalate(arrival)).toThrow(/manager must reconcile/);
     expect(values.get(workspace.key)).toBe(before);
   });
+});
+
+describe('arrival inventory obligations', () => {
+  it('blocks a physically ready room with scheduled maintenance and recovers through its authoritative release', () => {
+    const { arrival, workspace, values } = setup();
+    workspace.commit({ id: 'maintenance-824', expectedRevision: 0, actorId: 'actor-0', type: 'create', kind: 'block', title: 'Room 824 safety works', input: { room: 'ROOM-824', start: '2026-10-20', end: '2026-10-21', reason: 'Replace the corridor safety valve' } }, '2026-10-19T10:00:00Z');
+    expect(workspace.read().entities.find((item) => item.id === 'ROOM-824')?.status).toBe('ready');
+    expect(arrivalRoomAvailability(workspace.read(), 'ROOM-824')).toEqual(['Maintenance maintenance-824 remains scheduled during this stay: Replace the corridor safety valve.']);
+    const before = values.get(workspace.key);
+    expect(() => escalate(arrival)).toThrow('outstanding operational obligations');
+    expect(values.get(workspace.key)).toBe(before);
+    expect(arrival.read().interventions).toEqual([]);
+    workspace.commit({ id: 'maintenance-released', expectedRevision: workspace.read().revision, actorId: 'actor-0', type: 'operate', entityId: 'maintenance-824', operation: 'release', input: {} }, '2026-10-20T13:00:00Z');
+    escalate(arrival);
+    expect(arrival.read().interventions).toHaveLength(1);
+    expect(workspace.read().entities.find((item) => item.id === 'maintenance-824')?.status).toBe('released');
+  });
+  it('uses half-open stay boundaries and ignores cancelled reservations and released blocks', () => {
+    const { workspace } = setup();
+    workspace.commit({ id: 'adjacent-stay', expectedRevision: 0, actorId: 'actor-0', type: 'create', kind: 'stay', title: 'Guest before Nora', input: { room: 'ROOM-824', arrival: '2026-10-18', departure: '2026-10-20', guest: 'Elias Ahmed' } }, '2026-10-18T10:00:00Z');
+    expect(arrivalRoomAvailability(workspace.read(), 'ROOM-824')).toEqual([]);
+    workspace.commit({ id: 'overlapping-stay', expectedRevision: workspace.read().revision, actorId: 'actor-0', type: 'create', kind: 'stay', title: 'Another arriving guest', input: { room: 'ROOM-824', arrival: '2026-10-20', departure: '2026-10-23', guest: 'Salma Ali' } }, '2026-10-19T10:00:00Z');
+    expect(arrivalRoomAvailability(workspace.read(), 'ROOM-824')).toEqual(['Reservation overlapping-stay overlaps 2026-10-20 to 2026-10-23.']);
+    workspace.commit({ id: 'cancel-other', expectedRevision: workspace.read().revision, actorId: 'actor-0', type: 'operate', entityId: 'overlapping-stay', operation: 'cancel', input: {} }, '2026-10-19T11:00:00Z');
+    expect(arrivalRoomAvailability(workspace.read(), 'ROOM-824')).toEqual([]);
+  });
+  it('does not mistake a ready physical status for completion of open housekeeping', () => {
+    const { workspace, storage, arrival, values } = setup();
+    const snapshot = workspace.read();
+    snapshot.entities.push({ id: 'unfinished-824', kind: 'task', title: 'Post-maintenance room cleaning', status: 'queued', revision: 1, fields: { room: 'ROOM-824', stay: 'stay-1', assignee: 'Rooms recovery team' } });
+    snapshot.revision += 1;
+    storage.setItem(workspace.key, JSON.stringify(snapshot));
+    const before = values.get(workspace.key);
+    expect(arrival.read().operationalSources.find((item) => item.reservationId === 'RES-5812')?.rooms.find((item) => item.id === 'ROOM-824')).toMatchObject({ status: 'ready', occupied: false, availabilityBlockers: ['Housekeeping unfinished-824 remains queued; inspection is required.'] });
+    expect(() => escalate(arrival)).toThrow('Housekeeping unfinished-824');
+    expect(values.get(workspace.key)).toBe(before);
+  });
+});
+it('blocks a late housekeeping obligation after evidence preparation and releases only after inspection and reverification', () => {
+  const { arrival, workspace, storage, values } = setup();
+  escalate(arrival);
+  for (const kind of ['reservation-check', 'folio-clearance', 'room-inspection', 'occupancy-check', 'manager-review'] as const) {
+    const current = arrival.read();
+    const role = kind === 'room-inspection' ? 'Housekeeping Coordinator' : kind === 'manager-review' ? 'Duty Manager' : 'Front Desk Agent';
+    arrival.dispatch({ id: `prepared-${kind}`, expectedRevision: current.revision, expectedWorkspaceRevision: current.workspaceRevision, role, reservationId: 'RES-5812', kind, actor: role, evidenceReference: `EV-${kind}`, recordedOn: '2026-10-20T14:30:00Z' });
+  }
+  const changed = workspace.read();
+  changed.entities.push({ id: 'late-housekeeping', kind: 'task', title: 'Maintenance dust removal', status: 'queued', revision: 1, fields: { room: 'ROOM-824', stay: 'stay-1', assignee: 'Rooms recovery team' } });
+  changed.revision += 1;
+  storage.setItem(workspace.key, JSON.stringify(changed));
+  const before = values.get(workspace.key);
+  const history = structuredClone(arrival.read().evidence);
+  const release = () => { const current = arrival.read(); return arrival.dispatch({ id: 'release-after-housekeeping', expectedRevision: current.revision, expectedWorkspaceRevision: current.workspaceRevision, role: 'Duty Manager', reservationId: 'RES-5812', frontDeskAcknowledgement: 'FD-ACK', housekeepingAcknowledgement: 'HK-ACK', replacementRoom: 'ROOM-824', originalRoomDisposition: 'ROOM-512 transferred to maintenance', folioClearanceReference: 'EV-folio-clearance', occupancyReference: 'OCC-5812', noShowAuditReference: 'NOSHOW-5812', releasedBy: 'Duty manager north', releasedOn: '2026-10-20T14:45:00Z' }); };
+  expect(explainArrivalReadiness(arrival.read(), 'RES-5812')?.room).toMatchObject({ ready: false, blockers: ['Housekeeping late-housekeeping remains queued; inspection is required.'] });
+  expect(() => release()).toThrow('Housekeeping late-housekeeping');
+  expect(values.get(workspace.key)).toBe(before);
+  expect(arrival.read().evidence).toEqual(history);
+  const cleaning = workspace.read();
+  cleaning.entities.find((item) => item.id === 'ROOM-824')!.status = 'dirty';
+  cleaning.entities.find((item) => item.id === 'ROOM-824')!.revision += 1;
+  cleaning.revision += 1;
+  storage.setItem(workspace.key, JSON.stringify(cleaning));
+  for (const operation of ['clean', 'inspect']) workspace.commit({ id: `late-${operation}`, expectedRevision: workspace.read().revision, actorId: 'actor-2', type: 'operate', entityId: 'late-housekeeping', operation, input: {} }, '2026-10-20T14:35:00Z');
+  expect(arrivalRoomAvailability(workspace.read(), 'ROOM-824')).toEqual([]);
+  expect(() => release()).toThrow('Independent arrival evidence is missing');
+  for (const kind of ['room-inspection', 'occupancy-check', 'manager-review'] as const) {
+    const current = arrival.read();
+    const role = kind === 'room-inspection' ? 'Housekeeping Coordinator' : kind === 'manager-review' ? 'Duty Manager' : 'Front Desk Agent';
+    arrival.dispatch({ id: `reverified-${kind}`, expectedRevision: current.revision, expectedWorkspaceRevision: current.workspaceRevision, role, reservationId: 'RES-5812', kind, actor: role, evidenceReference: `RECHECK-${kind}`, recordedOn: '2026-10-20T14:40:00Z' });
+  }
+  release();
+  expect(workspace.read().entities.find((item) => item.id === 'stay-5812')?.status).toBe('checked-in');
+  expect(arrival.read().evidence.slice(0, history.length)).toEqual(history);
+  expect(workspace.read().entities.find((item) => item.id === 'late-housekeeping')?.status).toBe('inspected');
 });

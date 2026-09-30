@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { arrivalUrgencyWorkload } from "./arrival-urgency";
 import { AuthoritativeArrivalRepository } from './arrival-source-boundary';
 import {
@@ -19,6 +19,7 @@ export function ArrivalUrgencyControl() {
   const [sourceReference, setSourceReference] = useState('FOLIO-REV-5812');
   const [sourceReason, setSourceReason] = useState('Source record changed after the previous team verification.');
   const feedback = useRef<HTMLParagraphElement>(null);
+  useEffect(() => { if (message) feedback.current?.focus(); }, [message]);
   const workload = arrivalUrgencyWorkload(
     state.arrivals,
     "2026-10-20T14:00:00Z",
@@ -126,7 +127,7 @@ export function ArrivalUrgencyControl() {
         </p>
       )}
       {readiness?.sourcePins && <p aria-label="Arrival operational source versions">Reservation version {readiness.sourcePins.reservationVersion} · assigned room {readiness.sourcePins.roomId} version {readiness.sourcePins.roomVersion} · folio version {readiness.sourcePins.folioVersion}</p>}
-      <p aria-label="Arrival authoritative records">RES-5812 · guest-5812 · stay-5812 · {state.operationalSources.find((item) => item.reservationId === 'RES-5812')?.reservation.assignedRoomId ?? 'room unresolved'} · folio-5812 · {state.releases.length > 0 ? 'checked-in' : 'reserved'}</p>
+      <section aria-label="Arrival room availability"><h3>Room operational obligations</h3><p>Physical room readiness is checked separately from reservation dates, maintenance and housekeeping.</p><ul>{state.operationalSources.find((item) => item.reservationId === 'RES-5812')?.rooms.filter((item) => item.id === (readiness?.room.replacementRoom ?? 'ROOM-824')).map((room) => <li key={room.id}>{room.id} · {room.availabilityBlockers?.length ? room.availabilityBlockers.join(' ') : 'No outstanding reservation, maintenance or housekeeping obligation.'}</li>)}</ul></section>      <p aria-label="Arrival authoritative records">RES-5812 · guest-5812 · stay-5812 · {state.operationalSources.find((item) => item.reservationId === 'RES-5812')?.reservation.assignedRoomId ?? 'room unresolved'} · folio-5812 · {state.releases.length > 0 ? 'checked-in' : 'reserved'}</p>
       <button onClick={() => { try { setState(repository.read()); setMessage('Current reservation, room and folio records loaded.'); } catch (error) { setMessage(error instanceof Error ? error.message : 'Authoritative records could not be loaded.'); } queueMicrotask(() => feedback.current?.focus()); }}>Refresh authoritative records</button>
       <button
         disabled={role !== "Duty Manager" || state.interventions.length > 0}
