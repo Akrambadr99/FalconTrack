@@ -7,6 +7,7 @@ import {
   ArrivalPortfolioRepository,
   BrowserArrivalPersistence,
   initialArrivalPortfolioState,
+  prepareArrivalHandoff,
   type ArrivalOperationalSources,
   type ArrivalPortfolioState,
 } from './arrival-control-domain';
@@ -17,7 +18,7 @@ const folioId = 'folio-5812';
 const sourceIds = ['guest-5812', 'ROOM-512', 'ROOM-824', 'ROOM-826', stayId, folioId];
 
 type ArrivalWorkspace = Snapshot & { arrivalControl?: ArrivalPortfolioState };
-type ArrivalCommand = Parameters<ArrivalPortfolioRepository['dispatch']>[0] & { expectedWorkspaceRevision?: number | undefined };
+type ArrivalCommand = (Parameters<ArrivalPortfolioRepository['dispatch']>[0] | Parameters<typeof prepareArrivalHandoff>[1]) & { expectedWorkspaceRevision?: number | undefined };
 
 function entity(snapshot: Snapshot, id: string, kind: string): Entity {
   const found = snapshot.entities.find((item) => item.id === id && item.kind === kind);
@@ -36,8 +37,9 @@ function migrateSourceRecords(snapshot: Snapshot): Snapshot {
 }
 
 /** Physical readiness does not release calendar inventory or unfinished team work. */
-export function arrivalRoomAvailability(snapshot: Snapshot, roomId: string): string[] {
-  const stay = entity(snapshot, stayId, 'stay');
+export function arrivalRoomAvailability(snapshot: Snapshot, roomId: string, selectedReservationId = reservationId): string[] {
+  const stay = snapshot.entities.find((item) => item.kind === 'stay' && item.fields['reservationId'] === selectedReservationId);
+  if (!stay) throw new Error('Authoritative reservation stay is missing.');
   entity(snapshot, roomId, 'room');
   const start = String(stay.fields['arrival']);
   const end = String(stay.fields['departure']);
@@ -52,21 +54,21 @@ export function arrivalRoomAvailability(snapshot: Snapshot, roomId: string): str
   }
   return blockers;
 }
-export function authoritativeArrivalSource(snapshot: Snapshot): ArrivalOperationalSources {
-  const stay = entity(snapshot, stayId, 'stay');
-  const folio = entity(snapshot, folioId, 'folio');
-  entity(snapshot, 'guest-5812', 'guest');
-  if (snapshot.entities.filter((item) => item.kind === 'stay' && item.fields['reservationId'] === reservationId).length !== 1 || snapshot.entities.filter((item) => item.kind === 'folio' && item.fields['stay'] === stayId).length !== 1) {
-    throw new Error('RES-5812 must resolve to exactly one authoritative stay and folio.');
-  }
-  if (stay.fields['reservationId'] !== reservationId || stay.fields['guestId'] !== 'guest-5812' || folio.fields['stay'] !== stay.id) {
-    throw new Error('RES-5812 has an unresolved stay or folio reference. No arrival action was saved.');
-  }
+export function authoritativeArrivalSource(snapshot: Snapshot, selectedReservationId = reservationId): ArrivalOperationalSources {
+  const stays = snapshot.entities.filter((item) => item.kind === 'stay' && item.fields['reservationId'] === selectedReservationId);
+  const stay = stays[0];
+  if (stays.length !== 1 || !stay) throw new Error(`${selectedReservationId} must resolve to exactly one authoritative stay.`);
+  const guestId = stay.fields['guestId'];
+  if (typeof guestId !== 'string') throw new Error(`${selectedReservationId} has an unresolved guest reference.`);
+  entity(snapshot, guestId, 'guest');
+  const folios = snapshot.entities.filter((item) => item.kind === 'folio' && item.fields['stay'] === stay.id);
+  const folio = folios[0];
+  if (folios.length !== 1 || !folio) throw new Error(`${selectedReservationId} must resolve to exactly one authoritative folio.`);
   const roomId = stay.fields['room'];
-  if (typeof roomId !== 'string') throw new Error('RES-5812 is missing its assigned room.');
+  if (typeof roomId !== 'string') throw new Error(`${selectedReservationId} is missing its assigned room.`);
   entity(snapshot, roomId, 'room');
   return {
-    reservationId,
+    reservationId: selectedReservationId,
     stayId: stay.id,
     folioId: folio.id,
     reservation: { version: stay.revision, assignedRoomId: roomId },
@@ -75,7 +77,7 @@ export function authoritativeArrivalSource(snapshot: Snapshot): ArrivalOperation
       version: room.revision,
       status: room.status === 'ready' || room.status === 'occupied' ? 'ready' as const : 'blocked' as const,
       occupied: room.status === 'occupied',
-      availabilityBlockers: arrivalRoomAvailability(snapshot, room.id),
+      availabilityBlockers: arrivalRoomAvailability(snapshot, room.id, selectedReservationId),
     })),
     folio: { version: folio.revision, blocker: folio.fields['arrivalBlocker'] === 'yes', clearanceReference: typeof folio.fields['arrivalClearance'] === 'string' ? folio.fields['arrivalClearance'] : null },
   };
@@ -83,8 +85,9 @@ export function authoritativeArrivalSource(snapshot: Snapshot): ArrivalOperation
 
 function applyArrivalSource(snapshot: Snapshot, before: ArrivalOperationalSources, after: ArrivalOperationalSources, released: boolean): Snapshot {
   const next = structuredClone(snapshot);
-  const stay = entity(next, stayId, 'stay');
-  const folio = entity(next, folioId, 'folio');
+  if (!before.stayId || !before.folioId) throw new Error('Explicit authoritative stay and folio references are required.');
+  const stay = entity(next, before.stayId, 'stay');
+  const folio = entity(next, before.folioId, 'folio');
   if (after.reservation.assignedRoomId !== before.reservation.assignedRoomId) {
     const selected = after.reservation.assignedRoomId;
     if (!selected) throw new Error('A replacement room must remain assigned.');
@@ -148,16 +151,64 @@ export class AuthoritativeArrivalRepository {
     if (!embedded && (legacyIntervention && legacyIntervention.replacementRoom !== source.reservation.assignedRoomId || legacyRelease && entity(workspace, stayId, 'stay').status !== 'checked-in')) {
       arrival.unresolvedSource = 'Saved arrival actions predate the authoritative reservation, room and folio records. Their history is preserved, but a manager must reconcile the source links before new actions.';
     }
-    arrival.operationalSources = [...arrival.operationalSources.filter((item) => item.reservationId !== reservationId), source];
+    const sharedSources = arrival.arrivals.filter((item) => workspace.entities.some((record) => record.kind === 'stay' && record.fields['reservationId'] === item.reservationId)).map((item) => {
+      const shared = authoritativeArrivalSource(workspace, item.reservationId);
+      const sharedRoom = shared.rooms.find((room) => room.id === shared.reservation.assignedRoomId);
+      item.folioBlocker = shared.folio.blocker;
+      item.roomStatus = sharedRoom?.status ?? 'blocked';
+      return shared;
+    });
+    arrival.operationalSources = [...arrival.operationalSources.filter((item) => !sharedSources.some((shared) => shared.reservationId === item.reservationId)), ...sharedSources];
     arrival.workspaceRevision = workspace.revision;
     return { workspace, arrival, source };
+  }
+  async registerCoordinated(command: { id: string; expectedRevision: number; expectedWorkspaceRevision?: number | undefined; role: string; reservationId: string; roomId: string; departure: string; registeredBy: string; registeredOn: string }): Promise<ArrivalPortfolioState> {
+    return coordinateWorkspaceWrite(this.workspace.key, () => {
+      const { workspace, arrival } = this.bundle();
+      if (command.role !== 'Duty Manager') throw new Error('Only the duty manager can register authoritative arrival records.');
+      if (command.expectedRevision !== arrival.revision || command.expectedWorkspaceRevision !== workspace.revision) throw new Error('Arrival or authoritative workspace changed. Refresh before registration.');
+      const record = arrival.arrivals.find((item) => item.reservationId === command.reservationId);
+      if (!record || !command.id.trim() || !command.registeredBy.trim() || !Number.isFinite(Date.parse(command.registeredOn))) throw new Error('A current pending arrival, registration identity and named actor are required.');
+      if (workspace.entities.some((item) => item.kind === 'stay' && item.fields['reservationId'] === record.reservationId) || arrival.interventions.some((item) => item.reservationId === record.reservationId) || arrival.releases.some((item) => item.reservationId === record.reservationId)) throw new Error('This arrival is already registered or has legacy actions requiring explicit source reconciliation.');
+      const start = record.expectedAt.slice(0, 10);
+      const validDeparture = /^20\d{2}-\d{2}-\d{2}$/.test(command.departure) && Number.isFinite(Date.parse(command.departure)) && new Date(command.departure).toISOString().slice(0, 10) === command.departure;
+      const room = entity(workspace, command.roomId, 'room');
+      if (!validDeparture || command.departure <= start || room.status === 'occupied') throw new Error('A valid departure after arrival and unoccupied authoritative room are required.');
+      const next = structuredClone(workspace);
+      const guestId = `${record.reservationId}:guest`, registeredStayId = `${record.reservationId}:stay`, registeredFolioId = `${record.reservationId}:folio`;
+      if ([guestId, registeredStayId, registeredFolioId].some((id) => next.entities.some((item) => item.id === id))) throw new Error('Registration identity conflicts with an existing owning record. No link was inferred.');
+      next.entities.push({ id: guestId, kind: 'guest', title: record.guestName, status: 'active', revision: 1, fields: { name: record.guestName } }, { id: registeredStayId, kind: 'stay', title: `${record.guestName} · October arrival`, status: 'reserved', revision: 1, fields: { reservationId: record.reservationId, guestId, guest: record.guestName, room: room.id, arrival: start, departure: command.departure } }, { id: registeredFolioId, kind: 'folio', title: `${record.guestName} · pre-arrival folio`, status: 'open', revision: 1, fields: { stay: registeredStayId, charges: 0, payments: 0, arrivalBlocker: record.folioBlocker ? 'yes' : 'no' } });
+      const availability = arrivalRoomAvailability(next, room.id, record.reservationId);
+      if (availability.length) throw new Error('Arrival registration has outstanding room obligations. ' + availability.join(' '));
+      validateSnapshot(next, product);
+      next.revision += 1;
+      const nextArrival = structuredClone(arrival); nextArrival.revision += 1; nextArrival.workspaceRevision = next.revision;
+      const { operationalSources: _sources, ...history } = nextArrival; void _sources;
+      (next as ArrivalWorkspace).arrivalControl = { ...history, operationalSources: [] };
+      next.audit.push({ id: command.id, at: command.registeredOn, actor: command.registeredBy, action: 'arrival-registration', entityIds: [guestId, registeredStayId, room.id, registeredFolioId], summary: `${record.reservationId} explicitly registered from the pending arrival with entered departure ${command.departure}.` });
+      if (this.workspace.read().revision !== workspace.revision) throw new Error('Another client changed the authoritative workspace before registration was saved. Refresh and retry.');
+      this.storage.setItem(this.workspace.key, JSON.stringify(next));
+      return this.read();
+    });
   }
   read(): ArrivalPortfolioState { return this.bundle().arrival; }
   async dispatchCoordinated(command: ArrivalCommand): Promise<ArrivalPortfolioState> {
     return coordinateWorkspaceWrite(this.workspace.key, () => this.dispatch(command));
   }
   dispatch(command: ArrivalCommand): ArrivalPortfolioState {
-    const { workspace, arrival, source } = this.bundle();
+    const { workspace, arrival } = this.bundle();
+    const source = authoritativeArrivalSource(workspace, command.reservationId);
+    const fingerprint = JSON.stringify(Object.fromEntries(Object.entries(command).filter(([key]) => key !== 'expectedRevision' && key !== 'expectedWorkspaceRevision').sort(([left], [right]) => left.localeCompare(right))));
+    const receipt = workspace.receipts.find((item) => item.id === command.id);
+    if (receipt) { if (receipt.fingerprint !== fingerprint) throw new Error('Arrival command identity was already used with different intent.'); return arrival; }
+    const legacyRelease = arrival.releases.find((item) => item.id === command.id);
+    if (legacyRelease && 'occupancyReference' in command) {
+      const keys = ['reservationId', 'frontDeskAcknowledgement', 'housekeepingAcknowledgement', 'replacementRoom', 'originalRoomDisposition', 'folioClearanceReference', 'occupancyReference', 'noShowAuditReference', 'releasedBy', 'releasedOn'] as const;
+      if (keys.some((key) => legacyRelease[key] !== command[key])) throw new Error('Arrival release identity was already used with different evidence.');
+      return arrival;
+    }
+    const owningStay = entity(workspace, source.stayId ?? '', 'stay');
+    if (owningStay.status !== 'reserved') throw new Error('Only an active reserved stay accepts arrival preparation or evidence.');
     if (arrival.unresolvedSource) throw new Error(arrival.unresolvedSource);
     if (command.expectedWorkspaceRevision !== workspace.revision) throw new Error('Authoritative reservation, room or folio changed. Refresh before continuing.');
     if ('replacementRoom' in command) {
@@ -167,21 +218,22 @@ export class AuthoritativeArrivalRepository {
       if (candidate.availabilityBlockers?.length) throw new Error('Replacement room has outstanding operational obligations. ' + candidate.availabilityBlockers.join(' '));
     }
     if ('occupancyReference' in command) {
-      const stay = entity(workspace, stayId, 'stay');
+      const stay = entity(workspace, source.stayId ?? '', 'stay');
       const day = command.releasedOn.slice(0, 10);
       if (day < String(stay.fields['arrival']) || day >= String(stay.fields['departure'])) throw new Error('Operational release must occur within the authoritative stay dates.');
       const required = ['reservation-check', 'folio-clearance', 'room-inspection', 'occupancy-check', 'manager-review'];
-      const current = arrival.evidence.filter((item) => item.reservationId === reservationId && !arrival.invalidations.some((invalidation) => invalidation.evidenceId === item.id));
+      const current = arrival.evidence.filter((item) => item.reservationId === command.reservationId && !arrival.invalidations.some((invalidation) => invalidation.evidenceId === item.id));
       if (required.some((kind) => !current.some((item) => item.kind === kind))) throw new Error('Independent team evidence is required before authoritative check-in.');
     }
     const domain = new ArrivalPortfolioRepository({ load: () => arrival, save: () => undefined });
-    const nextArrival = domain.dispatch(command);
+    const nextArrival = 'arrivalPreparation' in command ? prepareArrivalHandoff(arrival, command) : domain.dispatch(command);
     if (nextArrival === arrival) return arrival;
-    const changedSource = nextArrival.operationalSources.find((item) => item.reservationId === reservationId);
+    const changedSource = nextArrival.operationalSources.find((item) => item.reservationId === command.reservationId);
     if (!changedSource) throw new Error('Authoritative arrival source disappeared.');
     const released = nextArrival.releases.length > arrival.releases.length;
     const nextWorkspace = applyArrivalSource(workspace, source, changedSource, released);
-    nextWorkspace.audit.push({ id: command.id, at: 'recordedOn' in command ? command.recordedOn : 'releasedOn' in command ? command.releasedOn : 'revisedOn' in command ? command.revisedOn : 'changedOn' in command ? command.changedOn : 'asOf' in command ? command.asOf : '2026-10-20T14:00:00Z', actor: command.role, action: released ? 'arrival-release' : 'arrival-control', entityIds: [stayId, folioId, String(changedSource.reservation.assignedRoomId)], summary: `RES-5812 arrival control revision ${String(nextArrival.revision)}` });
+    nextWorkspace.audit.push({ id: command.id, at: 'recordedOn' in command ? command.recordedOn : 'releasedOn' in command ? command.releasedOn : 'revisedOn' in command ? command.revisedOn : 'changedOn' in command ? command.changedOn : 'asOf' in command ? command.asOf : '2026-10-20T14:00:00Z', actor: command.role, action: released ? 'arrival-release' : 'arrival-control', entityIds: [source.stayId ?? "", source.folioId ?? "", String(changedSource.reservation.assignedRoomId)], summary: `${command.reservationId} arrival control revision ${String(nextArrival.revision)}` });
+    nextWorkspace.receipts.push({ id: command.id, fingerprint });
     nextArrival.workspaceRevision = nextWorkspace.revision;
     const { operationalSources: _sources, ...history } = nextArrival;
     void _sources;

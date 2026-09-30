@@ -249,3 +249,59 @@ it('blocks a late housekeeping obligation after evidence preparation and release
   expect(arrival.read().evidence.slice(0, history.length)).toEqual(history);
   expect(workspace.read().entities.find((item) => item.id === 'late-housekeeping')?.status).toBe('inspected');
 });
+
+const registration = { id: 'register-Maya', expectedRevision: 0, expectedWorkspaceRevision: 0, role: 'Duty Manager', reservationId: 'RES-5824', roomId: 'ROOM-826', departure: '2026-10-22', registeredBy: 'Duty manager north', registeredOn: '2026-10-20T14:00:00Z' };
+it('registers a real pending arrival explicitly and executes its independent authoritative check-in', async () => {
+  const { arrival, workspace } = setup();
+  let current = await arrival.registerCoordinated(registration);
+  expect(authoritativeArrivalSource(workspace.read(), 'RES-5824')).toMatchObject({ stayId: 'RES-5824:stay', folioId: 'RES-5824:folio', reservation: { assignedRoomId: 'ROOM-826' } });
+  expect(workspace.read().entities.find((item) => item.id === 'RES-5824:stay')?.fields).toMatchObject({ guestId: 'RES-5824:guest', guest: 'Maya Singh', departure: '2026-10-22' });
+  current = arrival.dispatch({ id: 'prepare-Maya', expectedRevision: current.revision, expectedWorkspaceRevision: current.workspaceRevision, role: 'Duty Manager', reservationId: 'RES-5824', arrivalPreparation: true, manager: 'Duty manager north', frontDeskOwner: 'Arrival lead', housekeepingOwner: 'Rooms recovery team', replacementRoom: 'ROOM-826', folioAction: 'Verify the registered pre-arrival folio', reason: 'Prepare an explicit arrival with independent room and financial checks.', asOf: '2026-10-20T14:00:00Z' });
+  expect(current.interventions[0]).toMatchObject({ reservationId: 'RES-5824', status: 'manager-prepared' });
+  for (const kind of ['reservation-check', 'folio-clearance', 'room-inspection', 'occupancy-check', 'manager-review'] as const) {
+    const role = kind === 'room-inspection' ? 'Housekeeping Coordinator' : kind === 'manager-review' ? 'Duty Manager' : 'Front Desk Agent';
+    current = arrival.dispatch({ id: `Maya-${kind}`, expectedRevision: current.revision, expectedWorkspaceRevision: current.workspaceRevision, role, reservationId: 'RES-5824', kind, actor: role, evidenceReference: `MAYA-${kind}`, recordedOn: '2026-10-20T14:30:00Z' });
+  }
+  arrival.dispatch({ id: 'release-Maya', expectedRevision: current.revision, expectedWorkspaceRevision: current.workspaceRevision, role: 'Duty Manager', reservationId: 'RES-5824', frontDeskAcknowledgement: 'FD-MAYA', housekeepingAcknowledgement: 'HK-MAYA', replacementRoom: 'ROOM-826', originalRoomDisposition: 'Registered original room retained', folioClearanceReference: 'MAYA-folio-clearance', occupancyReference: 'MAYA-OCC', noShowAuditReference: 'MAYA-NOSHOW', releasedBy: 'Duty manager north', releasedOn: '2026-10-20T14:45:00Z' });
+  const releasedWorkspace = workspace.read();
+  const replayed = arrival.dispatch({ id: 'release-Maya', expectedRevision: current.revision, expectedWorkspaceRevision: current.workspaceRevision, role: 'Duty Manager', reservationId: 'RES-5824', frontDeskAcknowledgement: 'FD-MAYA', housekeepingAcknowledgement: 'HK-MAYA', replacementRoom: 'ROOM-826', originalRoomDisposition: 'Registered original room retained', folioClearanceReference: 'MAYA-folio-clearance', occupancyReference: 'MAYA-OCC', noShowAuditReference: 'MAYA-NOSHOW', releasedBy: 'Duty manager north', releasedOn: '2026-10-20T14:45:00Z' });
+  expect(replayed.releases).toHaveLength(1);
+  expect(workspace.read()).toEqual(releasedWorkspace);
+  expect(() => arrival.dispatch({ id: 'release-Maya', expectedRevision: current.revision, expectedWorkspaceRevision: current.workspaceRevision, role: 'Duty Manager', reservationId: 'RES-5824', frontDeskAcknowledgement: 'FD-MAYA', housekeepingAcknowledgement: 'HK-MAYA', replacementRoom: 'ROOM-826', originalRoomDisposition: 'Registered original room retained', folioClearanceReference: 'ALTERED', occupancyReference: 'MAYA-OCC', noShowAuditReference: 'MAYA-NOSHOW', releasedBy: 'Duty manager north', releasedOn: '2026-10-20T14:45:00Z' })).toThrow('different intent');
+  expect(workspace.read().entities.find((item) => item.id === 'RES-5824:stay')?.status).toBe('checked-in');
+  expect(workspace.read().entities.find((item) => item.id === 'RES-5824:folio')?.fields['charges']).toBe(30000);
+  expect(workspace.read().entities.find((item) => item.id === 'stay-5812')?.status).toBe('reserved');
+  expect(workspace.read().entities.find((item) => item.id === 'folio-5812')?.fields['arrivalBlocker']).toBe('yes');
+  expect(arrival.read().releases[0]?.sourcePins).toMatchObject({ stayId: 'RES-5824:stay', folioId: 'RES-5824:folio', roomId: 'ROOM-826' });
+});
+it('rejects missing rooms, invalid dates, ownership, stale registration and duplicate identity without partial records', async () => {
+  const { arrival, workspace, values } = setup();
+  for (const change of [{ roomId: 'MISSING' }, { departure: '2026-02-31' }, { departure: '2026-10-20' }, { role: 'Front Desk Agent' }, { expectedWorkspaceRevision: 1 }, { reservationId: 'RES-UNKNOWN' }]) {
+    await expect(arrival.registerCoordinated({ ...registration, ...change })).rejects.toThrow();
+    expect(values.size).toBe(0);
+  }
+  const registered = await arrival.registerCoordinated(registration);
+  const before = values.get(workspace.key);
+  await expect(arrival.registerCoordinated({ ...registration, id: 'duplicate', expectedRevision: registered.revision, expectedWorkspaceRevision: registered.workspaceRevision })).rejects.toThrow('already registered');
+  expect(values.get(workspace.key)).toBe(before);
+});
+it('rejects overlapping calendar inventory and leaves legacy arrivals unlinked until explicitly registered', async () => {
+  const { arrival, workspace, storage, values } = setup();
+  expect(arrival.read().operationalSources.find((item) => item.reservationId === 'RES-5824')?.stayId).toBeUndefined();
+  const existing = workspace.read();
+  existing.entities.push({ id: 'calendar-conflict', kind: 'stay', title: 'Different actual booking', status: 'reserved', revision: 1, fields: { guest: 'Another guest', room: 'ROOM-826', arrival: '2026-10-20', departure: '2026-10-21' } });
+  existing.revision += 1; storage.setItem(workspace.key, JSON.stringify(existing));
+  const before = values.get(workspace.key);
+  await expect(arrival.registerCoordinated({ ...registration, expectedWorkspaceRevision: existing.revision })).rejects.toThrow('outstanding room');
+  expect(values.get(workspace.key)).toBe(before);
+  expect(workspace.read().entities.some((item) => item.id === 'RES-5824:stay')).toBe(false);
+});
+it('rejects direct check-in bypass and missing authoritative folio after explicit registration', async () => {
+  const { arrival, workspace, storage } = setup();
+  await arrival.registerCoordinated(registration);
+  const current = workspace.read();
+  expect(() => workspace.commit({ id: 'bypass', expectedRevision: current.revision, actorId: 'actor-0', type: 'operate', entityId: 'RES-5824:stay', operation: 'checkin', input: {} }, '2026-10-20T14:30:00Z')).toThrow('governed recovered-arrival');
+  current.entities = current.entities.filter((item) => item.id !== 'RES-5824:folio');
+  storage.setItem(workspace.key, JSON.stringify(current));
+  expect(() => arrival.read()).toThrow('exactly one authoritative folio');
+});

@@ -1,5 +1,5 @@
 import { createElement } from 'react'
-import { render, screen, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { product } from '../product/definition'
 import { Repository } from '../workspace/repository'
@@ -104,4 +104,40 @@ it('focuses newly mounted failure feedback after an asynchronous authoritative a
     if (previous === null) localStorage.removeItem(workspace.key)
     else localStorage.setItem(workspace.key, previous)
   }
+})
+it('preserves registration input on failure and scopes prepared arrival history when selection changes', async () => {
+  cleanup(); localStorage.clear()
+  const user = userEvent.setup()
+  render(createElement(ArrivalUrgencyControl))
+  const selection = screen.getByRole('combobox', { name: 'Active arrival' })
+  await user.selectOptions(selection, 'RES-5824')
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Arrival control role' }), 'Duty Manager')
+  await user.clear(screen.getByLabelText('Registered departure'))
+  await user.type(screen.getByLabelText('Registered departure'), '2026-10-20')
+  await user.click(screen.getByRole('button', { name: 'Register pending arrival records' }))
+  await waitFor(() => expect(screen.getByRole('status')).toHaveFocus())
+  expect(screen.getByLabelText('Registered departure')).toHaveValue('2026-10-20')
+  expect(screen.getByLabelText('Arrival authoritative records')).toHaveTextContent('stay unregistered')
+  await user.clear(screen.getByLabelText('Registered departure'))
+  await user.type(screen.getByLabelText('Registered departure'), '2026-10-22')
+  await user.click(screen.getByRole('button', { name: 'Register pending arrival records' }))
+  await screen.findByRole('button', { name: 'Prepare registered arrival handoff' })
+  await user.click(screen.getByRole('button', { name: 'Prepare registered arrival handoff' }))
+  await waitFor(() => expect(screen.getByRole('list', { name: 'Arrival escalation history' })).toHaveTextContent('RES-5824'))
+  const workspace = new Repository(product, localStorage)
+  const originalFolio = workspace.read().entities.find((item) => item.id === 'folio-5812')
+  const originalRoom = workspace.read().entities.find((item) => item.id === 'ROOM-512')
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Arrival control role' }), 'Front Desk Agent')
+  await user.click(screen.getByRole('button', { name: 'Record revised folio source' }))
+  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('folio source revised'))
+  expect(workspace.read().entities.find((item) => item.id === 'folio-5812')).toEqual(originalFolio)
+  expect(workspace.read().entities.find((item) => item.id === 'RES-5824:folio')?.fields['arrivalBlocker']).toBe('yes')
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Arrival control role' }), 'Housekeeping Coordinator')
+  await user.click(screen.getByRole('button', { name: 'Record revised housekeeping source' }))
+  await waitFor(() => expect(screen.getByRole('list', { name: 'Arrival source revision history' })).toHaveTextContent('housekeeping'))
+  expect(workspace.read().entities.find((item) => item.id === 'ROOM-512')).toEqual(originalRoom)
+  await user.selectOptions(selection, 'RES-5812')
+  expect(screen.getByRole('list', { name: 'Arrival escalation history' })).not.toHaveTextContent('RES-5824')
+  expect(screen.getByLabelText('Arrival authoritative records')).toHaveTextContent('stay-5812')
+  cleanup(); localStorage.clear()
 })

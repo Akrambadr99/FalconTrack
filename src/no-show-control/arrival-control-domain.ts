@@ -7,7 +7,7 @@ export function arrivalCapabilities(role: ArrivalControlRole) {
   return { canApproveReplacement: role === 'Duty Manager', canReleaseArrival: role === 'Duty Manager' } as const
 }
 export interface CoordinatedArrival extends UpcomingArrivalRecord { frontDeskOwner: string; housekeepingOwner: string }
-export interface ArrivalIntervention { id: string; reservationId: string; guestName: string; previousFrontDeskOwner: string; previousHousekeepingOwner: string; frontDeskOwner: string; housekeepingOwner: string; manager: string; replacementRoom: string; folioAction: string; reason: string; status: 'manager-escalated' | 'completed'; immutable: true }
+export interface ArrivalIntervention { id: string; reservationId: string; guestName: string; previousFrontDeskOwner: string; previousHousekeepingOwner: string; frontDeskOwner: string; housekeepingOwner: string; manager: string; replacementRoom: string; folioAction: string; reason: string; status: 'manager-escalated' | 'manager-prepared' | 'completed'; immutable: true }
 export interface ArrivalReconciliationSnapshot { reservation: { reservationId: string; guestName: string; ready: true }; room: { replacementRoom: string; originalRoomDisposition: string; ready: true }; housekeeping: { acknowledgement: string; ready: true }; folio: { clearanceReference: string; blockerCleared: true }; occupancy: { reference: string; conflictFree: true }; noShow: { auditReference: string; reconciled: true } }
 export interface ArrivalSourcePins { reservationVersion: number; roomId: string; roomVersion: number; folioVersion: number; stayId?: string; folioId?: string }
 export interface ArrivalOperationalSources { reservationId: string; stayId?: string; folioId?: string; reservation: { version: number; assignedRoomId: string | null }; rooms: { id: string; version: number; status: 'ready' | 'blocked'; occupied: boolean; availabilityBlockers?: string[] }[]; folio: { version: number; blocker: boolean; clearanceReference: string | null } }
@@ -21,6 +21,26 @@ function initialSources(arrivals: UpcomingArrivalRecord[], interventions: Arriva
 export const initialArrivalPortfolioState: ArrivalPortfolioState = { revision: 0, arrivals: seededUpcomingArrivals.map((item) => ({ ...structuredClone(item), frontDeskOwner: item.operationalOwner === 'Front desk' ? item.operationalOwner : 'Front desk west', housekeepingOwner: 'Housekeeping dispatch' })), interventions: [], operationalSources: initialSources(seededUpcomingArrivals), evidence: [], invalidations: [], sourceRevisions: [], releases: [] }
 function sourcePins(source: ArrivalOperationalSources, roomId: string): ArrivalSourcePins { const room = source.rooms.find((item) => item.id === roomId); return { reservationVersion: source.reservation.version, roomId, roomVersion: room?.version ?? -1, folioVersion: source.folio.version, ...(source.stayId ? { stayId: source.stayId } : {}), ...(source.folioId ? { folioId: source.folioId } : {}) } }
 function evidenceMatchesSource(evidence: ArrivalEvidenceRecord, pins: ArrivalSourcePins) { const previous = evidence.sourcePins; if (!previous) return true; if (evidence.kind === 'reservation-check') return previous.reservationVersion === pins.reservationVersion; if (evidence.kind === 'folio-clearance') return previous.folioVersion === pins.folioVersion; if (evidence.kind === 'room-inspection' || evidence.kind === 'occupancy-check') return previous.roomId === pins.roomId && previous.roomVersion === pins.roomVersion; return previous.reservationVersion === pins.reservationVersion && previous.roomId === pins.roomId && previous.roomVersion === pins.roomVersion && previous.folioVersion === pins.folioVersion }
+export function prepareArrivalHandoff(state: ArrivalPortfolioState, command: { id: string; expectedRevision: number; role: ArrivalControlRole; reservationId: string; arrivalPreparation: true; manager: string; frontDeskOwner: string; housekeepingOwner: string; replacementRoom: string; folioAction: string; asOf: string; reason: string }) {
+  if (state.interventions.some((item) => item.id === command.id)) return state
+  if (state.revision !== command.expectedRevision) throw new ArrivalControlError('STALE_REVISION', 'Arrival workload changed. Refresh before preparation.', command.reservationId)
+  if (command.role !== 'Duty Manager') throw new ArrivalControlError('UNAUTHORIZED', 'Only the duty manager can prepare the coordinated arrival handoff.', command.reservationId)
+  const arrival = state.arrivals.find((item) => item.reservationId === command.reservationId)
+  const source = state.operationalSources.find((item) => item.reservationId === command.reservationId)
+  const room = source?.rooms.find((item) => item.id === command.replacementRoom)
+  if (!arrival || !source?.stayId || !source.folioId || room?.status !== 'ready' || room.occupied || room.availabilityBlockers?.length || state.interventions.some((item) => item.reservationId === command.reservationId) || state.releases.some((item) => item.reservationId === command.reservationId)) throw new Error('An explicitly registered, unprepared arrival and available room are required.')
+  if (![command.manager, command.frontDeskOwner, command.housekeepingOwner, command.folioAction].every((item) => item.trim()) || command.reason.trim().length < 20) throw new Error('Arrival team ownership and a specific handoff reason are required.')
+  const next = structuredClone(state)
+  next.interventions.push({ id: command.id, reservationId: arrival.reservationId, guestName: arrival.guestName, previousFrontDeskOwner: arrival.frontDeskOwner, previousHousekeepingOwner: arrival.housekeepingOwner, frontDeskOwner: command.frontDeskOwner, housekeepingOwner: command.housekeepingOwner, manager: command.manager, replacementRoom: command.replacementRoom, folioAction: command.folioAction, reason: command.reason.trim(), status: 'manager-prepared', immutable: true })
+  const target = next.arrivals.find((item) => item.reservationId === arrival.reservationId)
+  const targetSource = next.operationalSources.find((item) => item.reservationId === arrival.reservationId)
+  if (!target || !targetSource) throw new Error('Arrival source disappeared before preparation.')
+  target.frontDeskOwner = command.frontDeskOwner; target.housekeepingOwner = command.housekeepingOwner; target.operationalOwner = command.manager; target.replacementAvailable = true
+  if (targetSource.reservation.assignedRoomId !== command.replacementRoom) { targetSource.reservation.assignedRoomId = command.replacementRoom; targetSource.reservation.version += 1 }
+  next.revision += 1
+  return next
+}
+
 interface EscalateArrival { id: string; expectedRevision: number; role: ArrivalControlRole; reservationId: string; manager: string; frontDeskOwner: string; housekeepingOwner: string; replacementRoom: string; folioAction: string; asOf: string; reason: string }
 
 export function escalateArrivalIntervention(state: ArrivalPortfolioState, command: EscalateArrival) {
@@ -56,7 +76,7 @@ export function reviseArrivalReplacement(state: ArrivalPortfolioState, command: 
   if (state.revision !== command.expectedRevision) throw new ArrivalControlError('STALE_REVISION', 'Arrival workload changed. Refresh before revising the room.', command.reservationId)
   if (!arrivalCapabilities(command.role).canApproveReplacement) throw new ArrivalControlError('UNAUTHORIZED', 'Only the duty manager can revise replacement inventory.', command.reservationId)
   const previous = [...state.interventions].reverse().find((item) => item.reservationId === command.reservationId)
-  if (previous?.status !== 'manager-escalated' || state.releases.some((item) => item.reservationId === command.reservationId)) throw new ArrivalControlError('ARRIVAL_INELIGIBLE', 'Only an active unreleased intervention can change rooms.', command.reservationId)
+  if (!previous || previous.status === 'completed' || state.releases.some((item) => item.reservationId === command.reservationId)) throw new ArrivalControlError('ARRIVAL_INELIGIBLE', 'Only an active unreleased intervention can change rooms.', command.reservationId)
   if (!command.replacementRoom.trim() || command.replacementRoom === previous.replacementRoom || command.reason.trim().length < 20) throw new Error('A different replacement room and a specific reason are required.')
   const next = structuredClone(state)
   next.interventions.push({ ...previous, id: command.id, replacementRoom: command.replacementRoom.trim(), reason: command.reason.trim(), immutable: true })
@@ -80,7 +100,7 @@ export function reviseArrivalSource(state: ArrivalPortfolioState, command: Revis
   if (command.role !== requiredRole) throw new ArrivalControlError('UNAUTHORIZED', `Only the ${requiredRole.toLowerCase()} can report this source revision.`, command.reservationId)
   const intervention = [...state.interventions].reverse().find((item) => item.reservationId === command.reservationId)
   if (!intervention) throw new ArrivalControlError('ARRIVAL_INELIGIBLE', 'Only an active unreleased intervention can revise arrival sources.', command.reservationId)
-  if (intervention.status !== 'manager-escalated' || state.releases.some((item) => item.reservationId === command.reservationId)) throw new ArrivalControlError('ARRIVAL_INELIGIBLE', 'Only an active unreleased intervention can revise arrival sources.', command.reservationId)
+  if (intervention.status === 'completed' || state.releases.some((item) => item.reservationId === command.reservationId)) throw new ArrivalControlError('ARRIVAL_INELIGIBLE', 'Only an active unreleased intervention can revise arrival sources.', command.reservationId)
   if (!command.sourceReference.trim() || command.reason.trim().length < 20) throw new Error('Source reference and specific change reason are required.')
   if (state.sourceRevisions.some((item) => item.reservationId === command.reservationId && item.source === command.source && item.sourceReference === command.sourceReference)) throw new Error('This source revision has already been recorded.')
   const affectedKinds: ArrivalEvidenceKind[] = command.source === 'folio' ? ['folio-clearance', 'manager-review'] : ['room-inspection', 'occupancy-check', 'manager-review']
@@ -102,7 +122,7 @@ interface RecordArrivalEvidence { id: string; expectedRevision: number; role: Ar
 export function recordArrivalEvidence(state: ArrivalPortfolioState, command: RecordArrivalEvidence) {
   if (state.evidence.some((item) => item.id === command.id)) return state
   if (state.revision !== command.expectedRevision) throw new ArrivalControlError('STALE_REVISION', 'Arrival workload changed. Refresh before recording evidence.', command.reservationId)
-  const intervention = [...state.interventions].reverse().find((item) => item.reservationId === command.reservationId && item.status === 'manager-escalated')
+  const intervention = [...state.interventions].reverse().find((item) => item.reservationId === command.reservationId && item.status !== 'completed')
   if (!intervention) throw new Error('An active manager intervention is required.')
   const expectedTeam = command.kind === 'room-inspection' ? 'Housekeeping Coordinator' : command.kind === 'manager-review' ? 'Duty Manager' : 'Front Desk Agent'
   if (command.role !== expectedTeam) throw new ArrivalControlError('UNAUTHORIZED', `Only the ${expectedTeam.toLocaleLowerCase()} can record this evidence.`, command.reservationId)
@@ -127,7 +147,7 @@ export function releaseOperationalArrival(state: ArrivalPortfolioState, command:
   if (!arrivalCapabilities(command.role).canReleaseArrival) throw new ArrivalControlError('UNAUTHORIZED', 'Only the duty manager can authorize final arrival release.', command.reservationId)
   const arrival = state.arrivals.find((item) => item.reservationId === command.reservationId)
   const intervention = [...state.interventions].reverse().find((item) => item.reservationId === command.reservationId)
-  if (!arrival || intervention?.status !== 'manager-escalated') throw new Error('An active manager intervention is required.')
+  if (!arrival || !intervention || intervention.status === 'completed') throw new Error('An active manager intervention is required.')
   if (command.replacementRoom !== intervention.replacementRoom || !command.frontDeskAcknowledgement || !command.housekeepingAcknowledgement || !command.originalRoomDisposition || !command.folioClearanceReference || !command.occupancyReference || !command.noShowAuditReference) throw new ArrivalControlError('EVIDENCE_INCOMPLETE', 'Room, housekeeping, folio, occupancy, and no-show evidence must be complete.', command.reservationId)
   const source = state.operationalSources.find((item) => item.reservationId === command.reservationId)
   const room = source?.rooms.find((item) => item.id === command.replacementRoom)
